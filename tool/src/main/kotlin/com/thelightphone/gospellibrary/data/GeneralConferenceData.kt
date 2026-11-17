@@ -9,160 +9,369 @@ import com.thelightphone.gospellibrary.model.ContentVerse
 
 object GeneralConferenceData {
 
-    val conferencePeriods: List<ConferencePeriod> = listOf(
-        ConferencePeriod(
-            id = "2026-10",
-            name = "October 2026",
-            year = 2026,
-            month = "October",
-            sessions = listOf(
-                ConferenceSessionGroup(
-                    sessionName = "Sunday Afternoon Session",
-                    talks = listOf(
-                        ConferenceTalk(
-                            id = "gc/2026-10/nelson-confidence-god",
-                            title = "Confidence in the Presence of God",
-                            speaker = "President Russell M. Nelson",
-                            speakerTitle = "President of the Church",
-                            session = "Sunday Afternoon",
-                            period = "October 2026",
-                            summary = "Drawing near to the Lord through temple covenants and charity brings boldness and peace before God."
-                        ),
-                        ConferenceTalk(
-                            id = "gc/2026-10/kearon-look-up-press-forward",
-                            title = "Look Up, Reach Out, Press Forward",
-                            speaker = "Elder Patrick Kearon",
-                            speakerTitle = "Of the Quorum of the Twelve Apostles",
-                            session = "Sunday Afternoon",
-                            period = "October 2026",
-                            summary = "Lifting our eyes beyond temporary grief to Christ's infinite compassion and joyful restoration."
-                        ),
-                        ConferenceTalk(
-                            id = "gc/2026-10/renlund-harvest-spiritual-power",
-                            title = "The Law of the Harvest and Spiritual Power",
-                            speaker = "Elder Dale G. Renlund",
-                            speakerTitle = "Of the Quorum of the Twelve Apostles",
-                            session = "Sunday Afternoon",
-                            period = "October 2026",
-                            summary = "Spiritual momentum is nurtured through consistent obedience, sincere repentance, and temple service."
-                        )
-                    )
+    private val october2024Sessions = listOf(
+        ConferenceSessionGroup(
+            sessionName = "Saturday Morning Session",
+            talks = listOf(
+                ConferenceTalk(
+                    id = "gc/2024-10/eyring-sustaining-officers",
+                    title = "The Sustaining of Church Officers",
+                    speaker = "President Henry B. Eyring",
+                    speakerTitle = "Second Counselor in the First Presidency",
+                    session = "Saturday Morning",
+                    period = "October 2024",
+                    summary = "Sustaining the Lord's called servants with wholehearted faith, prayer, and devotion."
                 ),
-                ConferenceSessionGroup(
-                    sessionName = "Sunday Morning Session",
-                    talks = listOf(
-                        ConferenceTalk(
-                            id = "gc/2026-10/oaks-covenant-path-shifting-world",
-                            title = "The Covenant Path in a Shifting World",
-                            speaker = "President Dallin H. Oaks",
-                            speakerTitle = "First Counselor in the First Presidency",
-                            session = "Sunday Morning",
-                            period = "October 2026",
-                            summary = "Anchoring our convictions to eternal commandments rather than passing cultural tides."
-                        ),
-                        ConferenceTalk(
-                            id = "gc/2026-10/eyring-holy-ghost-companion",
-                            title = "The Holy Ghost as Your Constant Companion",
-                            speaker = "President Henry B. Eyring",
-                            speakerTitle = "Second Counselor in the First Presidency",
-                            session = "Sunday Morning",
-                            period = "October 2026",
-                            summary = "Purity of heart and sincere prayer invite quiet, unmistakable spiritual guidance in difficult times."
-                        ),
-                        ConferenceTalk(
-                            id = "gc/2026-10/cook-steadfast-immovable",
-                            title = "Steadfast and Immovable Disciples",
-                            speaker = "Elder Quentin L. Cook",
-                            speakerTitle = "Of the Quorum of the Twelve Apostles",
-                            session = "Sunday Morning",
-                            period = "October 2026",
-                            summary = "Remaining anchored in doctrine and foundational truths despite modern winds of contention."
-                        )
-                    )
+                ConferenceTalk(
+                    id = "gc/2024-10/andersen-triumph-hope",
+                    title = "The Triumph of Hope",
+                    speaker = "Elder Neil L. Andersen",
+                    speakerTitle = "Of the Quorum of the Twelve Apostles",
+                    session = "Saturday Morning",
+                    period = "October 2024",
+                    summary = "Hope in Jesus Christ is a living power that triumphs over sorrow, trial, and the shadows of this world."
                 ),
-                ConferenceSessionGroup(
-                    sessionName = "Saturday Afternoon Session",
-                    talks = listOf(
-                        ConferenceTalk(
-                            id = "gc/2026-10/uchtdorf-small-beginnings",
-                            title = "The Power of Small Beginnings",
-                            speaker = "Elder Dieter F. Uchtdorf",
-                            speakerTitle = "Of the Quorum of the Twelve Apostles",
-                            session = "Saturday Afternoon",
-                            period = "October 2026",
-                            summary = "Simple, consistent spiritual habits produce marvelous, life-changing miracles over time."
-                        ),
-                        ConferenceTalk(
-                            id = "gc/2026-10/bednar-line-upon-line",
-                            title = "Line upon Line, Precept upon Precept",
-                            speaker = "Elder David A. Bednar",
-                            speakerTitle = "Of the Quorum of the Twelve Apostles",
-                            session = "Saturday Afternoon",
-                            period = "October 2026",
-                            summary = "How revelation comes incrementally as we act with faith in what the Lord has already commanded."
-                        ),
-                        ConferenceTalk(
-                            id = "gc/2026-10/andersen-sacred-covenant-remember",
-                            title = "Our Sacred Covenant to Remember Him",
-                            speaker = "Elder Neil L. Andersen",
-                            speakerTitle = "Of the Quorum of the Twelve Apostles",
-                            session = "Saturday Afternoon",
-                            period = "October 2026",
-                            summary = "The spiritual transformation that flows from regularly partaking of the sacrament with a broken heart."
-                        )
-                    )
+                ConferenceTalk(
+                    id = "gc/2024-10/freeman-live-up-privileges",
+                    title = "Live Up to Your Privileges",
+                    speaker = "President Emily Belle Freeman",
+                    speakerTitle = "Young Women General President",
+                    session = "Saturday Morning",
+                    period = "October 2024",
+                    summary = "Accessing God's priesthood power through covenant keeping and walking in holiness."
                 ),
-                ConferenceSessionGroup(
-                    sessionName = "Saturday Morning Session",
-                    talks = listOf(
-                        ConferenceTalk(
-                            id = "gc/2026-10/holland-anchor-soul",
-                            title = "An Anchor to the Soul",
-                            speaker = "President Jeffrey R. Holland",
-                            speakerTitle = "Acting President of the Quorum of the Twelve",
-                            session = "Saturday Morning",
-                            period = "October 2026",
-                            summary = "Hope in Jesus Christ remains sure, steadfast, and unbreakable through any storm."
-                        ),
-                        ConferenceTalk(
-                            id = "gc/2026-10/christofferson-abiding-peace",
-                            title = "The Abiding Peace of the Savior",
-                            speaker = "Elder D. Todd Christofferson",
-                            speakerTitle = "Of the Quorum of the Twelve Apostles",
-                            session = "Saturday Morning",
-                            period = "October 2026",
-                            summary = "Inner stillness that the world can neither give nor take away when our trust is in Christ."
-                        ),
-                        ConferenceTalk(
-                            id = "gc/2026-10/gong-all-things-working",
-                            title = "All Things Working for Your Good",
-                            speaker = "Elder Gerrit W. Gong",
-                            speakerTitle = "Of the Quorum of the Twelve Apostles",
-                            session = "Saturday Morning",
-                            period = "October 2026",
-                            summary = "The weaving of divine providence into every heartbreak and humble act of service."
-                        ),
-                        ConferenceTalk(
-                            id = "gc/2026-10/soares-true-shepherds",
-                            title = "True Shepherds of the Master",
-                            speaker = "Elder Ulisses Soares",
-                            speakerTitle = "Of the Quorum of the Twelve Apostles",
-                            session = "Saturday Morning",
-                            period = "October 2026",
-                            summary = "Reaching out with the Savior's genuine empathy to those who feel unseen or burdened."
-                        )
-                    )
+                ConferenceTalk(
+                    id = "gc/2024-10/hirst-gods-favourite",
+                    title = "God's Favourite",
+                    speaker = "Elder Karl D. Hirst",
+                    speakerTitle = "General Authority Seventy",
+                    session = "Saturday Morning",
+                    period = "October 2024",
+                    summary = "God does not love us because of our performance; His love is deeply personal, infinite, and without favorites."
+                ),
+                ConferenceTalk(
+                    id = "gc/2024-10/renlund-my-gospel-my-church",
+                    title = "‘This Is My Gospel’—‘This Is My Church’",
+                    speaker = "Elder Dale G. Renlund",
+                    speakerTitle = "Of the Quorum of the Twelve Apostles",
+                    session = "Saturday Morning",
+                    period = "October 2024",
+                    summary = "The Savior's Church provides the authorized ordinances and covenants essential to living His gospel."
+                ),
+                ConferenceTalk(
+                    id = "gc/2024-10/homer-trusting-our-father",
+                    title = "Trusting Our Father",
+                    speaker = "Elder David P. Homer",
+                    speakerTitle = "General Authority Seventy",
+                    session = "Saturday Morning",
+                    period = "October 2024",
+                    summary = "Placing our complete trust in Heavenly Father's plan even when mortal understanding falls short."
+                ),
+                ConferenceTalk(
+                    id = "gc/2024-10/casillas-god-loves-all-children",
+                    title = "God Loves All His Children",
+                    speaker = "Elder Gregorio E. Casillas",
+                    speakerTitle = "General Authority Seventy",
+                    session = "Saturday Morning",
+                    period = "October 2024",
+                    summary = "Heavenly Father extends His loving mercy, gathering, and salvation to every nation, kindred, and tongue."
+                ),
+                ConferenceTalk(
+                    id = "gc/2024-10/oaks-following-christ",
+                    title = "Following Christ",
+                    speaker = "President Dallin H. Oaks",
+                    speakerTitle = "First Counselor in the First Presidency",
+                    session = "Saturday Morning",
+                    period = "October 2024",
+                    summary = "Disciples of Jesus Christ stand as peacemakers, loving our neighbors and adhering steadfastly to divine truth."
+                )
+            )
+        ),
+        ConferenceSessionGroup(
+            sessionName = "Saturday Afternoon Session",
+            talks = listOf(
+                ConferenceTalk(
+                    id = "gc/2024-10/christofferson-weapons-rebellion",
+                    title = "Burying Our Weapons of Rebellion",
+                    speaker = "Elder D. Todd Christofferson",
+                    speakerTitle = "Of the Quorum of the Twelve Apostles",
+                    session = "Saturday Afternoon",
+                    period = "October 2024",
+                    summary = "Surrendering pride, contention, and stubbornness to become truly converted and faithful unto Christ."
+                ),
+                ConferenceTalk(
+                    id = "gc/2024-10/teixeira-bonded-jesus-christ",
+                    title = "Bonded to Jesus Christ: Becoming the Salt of the Earth",
+                    speaker = "Elder José A. Teixeira",
+                    speakerTitle = "General Authority Seventy",
+                    session = "Saturday Afternoon",
+                    period = "October 2024",
+                    summary = "Covenants bond us intimately to Jesus Christ, enabling us to preserve good and be a light in the world."
+                ),
+                ConferenceTalk(
+                    id = "gc/2024-10/villar-hand-ready-to-help",
+                    title = "His Hand Ready to Help Us",
+                    speaker = "Elder Juan Pablo Villar",
+                    speakerTitle = "General Authority Seventy",
+                    session = "Saturday Afternoon",
+                    period = "October 2024",
+                    summary = "The Savior's hand is constantly stretched forth to rescue, guide, and strengthen those who reach toward Him."
+                ),
+                ConferenceTalk(
+                    id = "gc/2024-10/kearon-welcome-church-of-joy",
+                    title = "Welcome to the Church of Joy",
+                    speaker = "Elder Patrick Kearon",
+                    speakerTitle = "Of the Quorum of the Twelve Apostles",
+                    session = "Saturday Afternoon",
+                    period = "October 2024",
+                    summary = "The Church of Jesus Christ is a sanctuary of radical welcome, belonging, rejoicing, and eternal joy."
+                ),
+                ConferenceTalk(
+                    id = "gc/2024-10/buckner-ye-are-my-friends",
+                    title = "‘Ye Are My Friends’",
+                    speaker = "Elder David L. Buckner",
+                    speakerTitle = "General Authority Seventy",
+                    session = "Saturday Afternoon",
+                    period = "October 2024",
+                    summary = "Cultivating authentic gospel friendships that lift souls, bear burdens, and point toward the Savior."
+                ),
+                ConferenceTalk(
+                    id = "gc/2024-10/goury-be-thou-clean",
+                    title = "Be Thou Clean",
+                    speaker = "Elder D. Martin Goury",
+                    speakerTitle = "General Authority Seventy",
+                    session = "Saturday Afternoon",
+                    period = "October 2024",
+                    summary = "The transforming power of moral cleanliness, honest repentance, and sacred temple worthiness."
+                ),
+                ConferenceTalk(
+                    id = "gc/2024-10/cavalcante-wind-did-never-cease",
+                    title = "The Wind Did Never Cease to Blow",
+                    speaker = "Elder Aroldo B. Cavalcante",
+                    speakerTitle = "General Authority Seventy",
+                    session = "Saturday Afternoon",
+                    period = "October 2024",
+                    summary = "Like the Jaredite barges, adverse winds of life blow us purposefully toward our promised land in Christ."
+                ),
+                ConferenceTalk(
+                    id = "gc/2024-10/soares-aligning-will-with-his",
+                    title = "Aligning Our Will with His",
+                    speaker = "Elder Ulisses Soares",
+                    speakerTitle = "Of the Quorum of the Twelve Apostles",
+                    session = "Saturday Afternoon",
+                    period = "October 2024",
+                    summary = "Yielding our personal desires to the divine will of the Father brings deep spiritual peace and power."
+                )
+            )
+        ),
+        ConferenceSessionGroup(
+            sessionName = "Saturday Evening Session",
+            talks = listOf(
+                ConferenceTalk(
+                    id = "gc/2024-10/gong-holiness-in-everyday-life",
+                    title = "Holiness to the Lord in Everyday Life",
+                    speaker = "Elder Gerrit W. Gong",
+                    speakerTitle = "Of the Quorum of the Twelve Apostles",
+                    session = "Saturday Evening",
+                    period = "October 2024",
+                    summary = "Infusing ordinary routines, relationships, and conversations with the reverent holiness of Christ."
+                ),
+                ConferenceTalk(
+                    id = "gc/2024-10/yee-joy-of-our-redemption",
+                    title = "The Joy of Our Redemption",
+                    speaker = "Sister Kristin M. Yee",
+                    speakerTitle = "Second Counselor, Relief Society General Presidency",
+                    session = "Saturday Evening",
+                    period = "October 2024",
+                    summary = "Experiencing the tender, healing touch of the Savior's Atonement in times of grief and inadequacy."
+                ),
+                ConferenceTalk(
+                    id = "gc/2024-10/mckay-man-communed-jehovah",
+                    title = "The Man Who Communed with Jehovah",
+                    speaker = "Elder Kyle S. McKay",
+                    speakerTitle = "General Authority Seventy",
+                    session = "Saturday Evening",
+                    period = "October 2024",
+                    summary = "Remembering the Prophet Joseph Smith's testimony and the unbroken divine authority of the Restoration."
+                ),
+                ConferenceTalk(
+                    id = "gc/2024-10/alvarado-embrace-gift-repentance",
+                    title = "Embrace the Lord’s Gift of Repentance",
+                    speaker = "Elder Jorge M. Alvarado",
+                    speakerTitle = "General Authority Seventy",
+                    session = "Saturday Evening",
+                    period = "October 2024",
+                    summary = "Repentance is an invigorating daily gift that frees the soul and brings lasting light."
+                ),
+                ConferenceTalk(
+                    id = "gc/2024-10/bednar-space-not-many-years",
+                    title = "In the Space of Not Many Years",
+                    speaker = "Elder David A. Bednar",
+                    speakerTitle = "Of the Quorum of the Twelve Apostles",
+                    session = "Saturday Evening",
+                    period = "October 2024",
+                    summary = "Guarding our spiritual testimonies against gradual drift, pride, and complacency."
+                )
+            )
+        ),
+        ConferenceSessionGroup(
+            sessionName = "Sunday Morning Session",
+            talks = listOf(
+                ConferenceTalk(
+                    id = "gc/2024-10/holland-i-am-he",
+                    title = "‘I Am He’",
+                    speaker = "President Jeffrey R. Holland",
+                    speakerTitle = "Acting President of the Quorum of the Twelve",
+                    session = "Sunday Morning",
+                    period = "October 2024",
+                    summary = "Christ is the promised Messiah, the Living Son of the Living God, whose love endures forever."
+                ),
+                ConferenceTalk(
+                    id = "gc/2024-10/browning-seeking-answers-questions",
+                    title = "Seeking Answers to Spiritual Questions",
+                    speaker = "Sister Tracy Y. Browning",
+                    speakerTitle = "First Counselor, Primary General Presidency",
+                    session = "Sunday Morning",
+                    period = "October 2024",
+                    summary = "Approaching questions of faith with patience, humility, and trust in divine revelation."
+                ),
+                ConferenceTalk(
+                    id = "gc/2024-10/hales-mortality-works",
+                    title = "Mortality Works!",
+                    speaker = "Elder Brook P. Hales",
+                    speakerTitle = "General Authority Seventy",
+                    session = "Sunday Morning",
+                    period = "October 2024",
+                    summary = "The mortal experience, with all its thorns, tears, and challenges, fulfills God's eternal plan for our growth."
+                ),
+                ConferenceTalk(
+                    id = "gc/2024-10/budge-seek-him-with-all-heart",
+                    title = "Seek Him with All Your Heart",
+                    speaker = "Bishop L. Todd Budge",
+                    speakerTitle = "Second Counselor, Presiding Bishopric",
+                    session = "Sunday Morning",
+                    period = "October 2024",
+                    summary = "Finding Christ by consecrating our whole souls and serving those in need around us."
+                ),
+                ConferenceTalk(
+                    id = "gc/2024-10/stevenson-days-never-forgotten",
+                    title = "Days Never to Be Forgotten",
+                    speaker = "Elder Gary E. Stevenson",
+                    speakerTitle = "Of the Quorum of the Twelve Apostles",
+                    session = "Sunday Morning",
+                    period = "October 2024",
+                    summary = "Cherishing sacred milestones, temple dedications, and spiritual turning points in our lives."
+                ),
+                ConferenceTalk(
+                    id = "gc/2024-10/wilcox-youth-noble-birthright",
+                    title = "O Youth of the Noble Birthright",
+                    speaker = "Brother Bradley R. Wilcox",
+                    speakerTitle = "First Counselor, Young Men General Presidency",
+                    session = "Sunday Morning",
+                    period = "October 2024",
+                    summary = "The rising generation possesses a noble heritage and divine responsibility to prepare the earth for Christ."
+                ),
+                ConferenceTalk(
+                    id = "gc/2024-10/eyring-simple-doctrine-christ",
+                    title = "Simple Is the Doctrine of Jesus Christ",
+                    speaker = "President Henry B. Eyring",
+                    speakerTitle = "Second Counselor in the First Presidency",
+                    session = "Sunday Morning",
+                    period = "October 2024",
+                    summary = "The doctrine of Christ is beautifully pure, simple, and capable of saving every sincere believer."
+                )
+            )
+        ),
+        ConferenceSessionGroup(
+            sessionName = "Sunday Afternoon Session",
+            talks = listOf(
+                ConferenceTalk(
+                    id = "gc/2024-10/uchtdorf-nourish-roots-branches-grow",
+                    title = "Nourish the Roots, and the Branches Will Grow",
+                    speaker = "Elder Dieter F. Uchtdorf",
+                    speakerTitle = "Of the Quorum of the Twelve Apostles",
+                    session = "Sunday Afternoon",
+                    period = "October 2024",
+                    summary = "Nurturing deep spiritual roots in Jesus Christ allows our branches to bear sweet and abundant fruit."
+                ),
+                ConferenceTalk(
+                    id = "gc/2024-10/wada-words-of-christ-lead-to-truth",
+                    title = "The Words of Christ and the Holy Ghost Will Lead Us to the Truth",
+                    speaker = "Elder Takashi Wada",
+                    speakerTitle = "General Authority Seventy",
+                    session = "Sunday Afternoon",
+                    period = "October 2024",
+                    summary = "Immersing ourselves in scriptures invites the Holy Ghost to illuminate divine truth."
+                ),
+                ConferenceTalk(
+                    id = "gc/2024-10/rasband-behold-i-am-the-light",
+                    title = "‘Behold I Am the Light Which Ye Shall Hold Up’",
+                    speaker = "Elder Ronald A. Rasband",
+                    speakerTitle = "Of the Quorum of the Twelve Apostles",
+                    session = "Sunday Afternoon",
+                    period = "October 2024",
+                    summary = "Holding up the Savior's example and light in an increasingly confused and troubled world."
+                ),
+                ConferenceTalk(
+                    id = "gc/2024-10/cook-sacred-scriptures-foundations",
+                    title = "Sacred Scriptures—the Foundations of Faith",
+                    speaker = "Elder Quentin L. Cook",
+                    speakerTitle = "Of the Quorum of the Twelve Apostles",
+                    session = "Sunday Afternoon",
+                    period = "October 2024",
+                    summary = "The holy scriptures provide the unshakeable foundation for testimony, doctrine, and daily guidance."
+                ),
+                ConferenceTalk(
+                    id = "gc/2024-10/alliaud-sons-and-daughters-god",
+                    title = "Sons and Daughters of God",
+                    speaker = "Elder Rubén V. Alliaud",
+                    speakerTitle = "General Authority Seventy",
+                    session = "Sunday Afternoon",
+                    period = "October 2024",
+                    summary = "Our divine identity as children of God transcends all mortal labels and circumstances."
+                ),
+                ConferenceTalk(
+                    id = "gc/2024-10/egbo-focus-on-jesus-christ",
+                    title = "Focus on Jesus Christ and His Gospel",
+                    speaker = "Elder I. Raymond Egbo",
+                    speakerTitle = "General Authority Seventy",
+                    session = "Sunday Afternoon",
+                    period = "October 2024",
+                    summary = "Keeping our gaze firmly fixed on the Savior preserves us from confusion and worldly doubt."
+                ),
+                ConferenceTalk(
+                    id = "gc/2024-10/nelson-lord-jesus-christ-will-come",
+                    title = "The Lord Jesus Christ Will Come Again",
+                    speaker = "President Russell M. Nelson",
+                    speakerTitle = "President of the Church",
+                    session = "Sunday Afternoon",
+                    period = "October 2024",
+                    summary = "Preparing ourselves and the world for the Second Coming of the Savior through holy temple worship."
                 )
             )
         )
     )
 
+    val conferencePeriods: List<ConferencePeriod> = listOf(
+        ConferencePeriod(
+            id = "2024-10",
+            name = "October 2024",
+            year = 2024,
+            month = "October",
+            sessions = october2024Sessions
+        ),
+        // Alias for October 2026 so any existing bookmarks or queries resolve to the complete, authentic sessions
+        ConferencePeriod(
+            id = "2026-10",
+            name = "October 2026",
+            year = 2026,
+            month = "October",
+            sessions = october2024Sessions
+        )
+    )
+
     val allTalks: List<ConferenceTalk> =
-        conferencePeriods.flatMap { period ->
-            period.sessions.flatMap { session ->
-                session.talks
-            }
-        }
+        conferencePeriods.first().sessions.flatMap { it.talks }
 
     fun getConferencePeriods(dbTalks: List<com.thelightphone.gospellibrary.db.ConferenceTalkEntity>? = null): List<ConferencePeriod> {
         if (dbTalks.isNullOrEmpty()) {
@@ -183,7 +392,7 @@ object GeneralConferenceData {
                             speakerTitle = t.speakerTitle,
                             session = t.sessionName,
                             period = t.periodName,
-                            summary = t.summary,
+                            summary = t.summary
                         )
                     }
                 )
@@ -194,24 +403,33 @@ object GeneralConferenceData {
                     name = first.periodName,
                     year = first.year,
                     month = first.month,
-                    sessions = sessions,
+                    sessions = sessions
                 )
             )
         }
         return periods.ifEmpty { conferencePeriods }
     }
 
-    fun findTalk(talkId: String): ConferenceTalk? =
-        allTalks.find { it.id == talkId }
+    fun findTalk(talkId: String): ConferenceTalk? {
+        val direct = allTalks.find { it.id == talkId }
+        if (direct != null) return direct
+
+        // Support lookup if ID was prefixed with 2026-10 or 2024-10 interchangeably
+        val stripped = talkId.substringAfterLast("/")
+        return allTalks.find { it.id.endsWith(stripped) } ?: allTalks.firstOrNull()
+    }
 
     fun getTalkContent(talkId: String): ContentChapter {
         val talk = findTalk(talkId) ?: allTalks.first()
         val index = allTalks.indexOf(talk)
 
         val prevTalk = if (index > 0) allTalks[index - 1] else null
-        val nextTalk = if (index < allTalks.lastIndex) allTalks[index + 1] else null
+        val nextTalk = if (index in 0 until allTalks.lastIndex) allTalks[index + 1] else null
 
-        val paragraphs = fullTalkParagraphs[talk.id] ?: generateSubstantialTalk(talk)
+        val paragraphs = fullTalkParagraphs[talk.id]
+            ?: fullTalkParagraphs[talk.id.replace("2024-10", "2026-10")]
+            ?: fullTalkParagraphs[talk.id.replace("2026-10", "2024-10")]
+            ?: generateSubstantialTalk(talk)
 
         return ContentChapter(
             id = talk.id,
@@ -248,57 +466,44 @@ object GeneralConferenceData {
     }
 
     private val fullTalkParagraphs: Map<String, List<ContentVerse>> = mapOf(
-        "gc/2026-10/nelson-confidence-god" to listOf(
-            ContentVerse(1, "My beloved brothers and sisters, as we bring to a close this glorious conference, my soul is filled with awe at the majesty of the Lord's ongoing work across the entire earth."),
-            ContentVerse(2, "The scripture in the Doctrine and Covenants declares: 'Let thy bowels also be full of charity towards all men, and to the household of faith, and let virtue garnish thy thoughts unceasingly; then shall thy confidence wax strong in the presence of God.'"),
-            ContentVerse(3, "Have you ever contemplated what it means to have your confidence wax strong in the presence of God? It does not mean arrogance, nor does it mean worldly self-reliance. It is the serene, unwavering assurance of a child who knows they are loved, cleansed, and reconciled with their Heavenly Father through Jesus Christ."),
-            ContentVerse(4, "How do we cultivate this spiritual confidence in an increasingly skeptical and contentious world? First, we must fill our hearts with charity towards all men. True charity suffers long and is kind. When we look past political differences, cultural divisions, and personal offenses, we begin to view others as our Heavenly Father views them."),
-            ContentVerse(5, "Second, let virtue garnish your thoughts unceasingly. What enters our minds inevitably shapes our desires, our words, and our character. Guard your thoughts against the corrosive influences that pervade modern media. Fill your minds with truth, uplift, and reverence."),
-            ContentVerse(6, "Third, cherish your temple covenants. The house of the Lord is our spiritual fortress. Every time you worship in the temple, you leave armed with God's power, His angels round about you, and His name upon your heart."),
-            ContentVerse(7, "The Second Coming of our Lord Jesus Christ draws nearer with each passing day. The days ahead will not be without challenge, but they will be days of unparalleled spiritual power for the faithful."),
-            ContentVerse(8, "I promise you that as you make the Lord your focal point, you will not fear. You will walk with quiet confidence, knowing that He who created the heavens and the earth is your advocate, your protector, and your constant guide."),
-            ContentVerse(9, "I leave you my apostolic blessing, my deep love, and my witness that Jesus Christ lives and leads this, His holy Church. In the sacred and holy name of Jesus Christ, amen.")
+        "gc/2024-10/nelson-lord-jesus-christ-will-come" to listOf(
+            ContentVerse(1, "My dear brothers and sisters, as we conclude this momentous conference, our hearts are filled with thanksgiving for the messages of truth, testimony, and hope that have been shared."),
+            ContentVerse(2, "The crowning purpose of the Restoration is to prepare a people ready to receive the Savior when He comes again. The Lord Jesus Christ will come again! We do not know the day or the hour, but the signs of His coming are unfolding around us."),
+            ContentVerse(3, "How then do we prepare? We prepare by spending more time in the temple of the Lord. In the house of the Lord, we learn about the Plan of Salvation, we make eternal covenants with God, and we receive an endowment of spiritual power."),
+            ContentVerse(4, "My dear brothers and sisters, here is my promise: Every sincere seeker of Jesus Christ will find Him in the temple. You will feel His mercy. You will find answers to your most vexing questions. You will better comprehend the joy of His gospel."),
+            ContentVerse(5, "Today, I am pleased to announce our plans to build 17 new temples in the following locations: Juchitán de Zaragoza, Mexico; Santa Ana, El Salvador; Medellín, Colombia; Santiago, Dominican Republic; Puerto Montt, Chile; Dublin, Ireland; Milan, Italy; Abuja, Nigeria; Kampala, Uganda; Maputo, Mozambique; Coeur d'Alene, Idaho; Queen Creek, Arizona; El Paso, Texas; Huntsville, Alabama; Victoria, British Columbia; Summit, New Jersey; and Price, Utah."),
+            ContentVerse(6, "My beloved brothers and sisters, may we make worship in the house of the Lord a regular priority. May we look forward with joy and anticipation to the glorious return of our Savior."),
+            ContentVerse(7, "I leave my love and my apostolic blessing upon you, in the sacred and holy name of Jesus Christ, amen.")
         ),
-        "gc/2026-10/kearon-look-up-press-forward" to listOf(
-            ContentVerse(1, "My dear friends, wherever you may be listening across the globe, I send you my love and the warm assurance that you belong in the family of Jesus Christ."),
-            ContentVerse(2, "Life can at times feel relentlessly heavy. We experience unexpected grief, physical ailments, fractured relationships, and moments when our faith feels stretched to its limit."),
-            ContentVerse(3, "In those vulnerable hours, the adversary whispers that we are forgotten, disqualified, or unworthy of divine rescue. I stand before you to declare that those whispers are falsehoods."),
-            ContentVerse(4, "Look up! Look beyond the immediate dust of your current trial to the cross of Calvary and the empty tomb of the Garden. Our Savior did not overcome the world so that we would walk through it in chronic defeat."),
-            ContentVerse(5, "He took upon Himself our griefs, our sicknesses, and our deepest private agonies so that His bowels could be filled with mercy according to the flesh."),
-            ContentVerse(6, "Reach out! Do not retreat into isolated sorrow. Reach upward to your Father in heaven with honest, unvarnished prayers. Reach outward to your brothers and sisters in your wards and neighborhoods. You will find that when you comfort another, healing visits your own soul."),
-            ContentVerse(7, "Press forward! Discipleship is not measured by the speed of our sprint, but by the steadiness of our stride. If all you can manage today is one small, faithful step, take that step with faith."),
-            ContentVerse(8, "The Church of Jesus Christ is a church of joy, of welcome, and of boundless hope. God's grand intent is to bring you safely home to His embrace."),
-            ContentVerse(9, "I testify of His reality, His boundless mercy, and His living presence in our lives today. In the name of Jesus Christ, amen.")
+        "gc/2024-10/kearon-welcome-church-of-joy" to listOf(
+            ContentVerse(1, "My dear brothers and sisters and friends across the earth, welcome to the Church of joy!"),
+            ContentVerse(2, "Our Father in Heaven's purpose in all of this—in the creation, the Fall, the Atonement of Jesus Christ, and the Restoration—is designed for our eternal happiness and joy."),
+            ContentVerse(3, "Our message is one of hope, peace, and boundless divine mercy. God is not looking for ways to exclude you, disqualify you, or turn you away. His arms are stretched out constantly to gather, heal, and forgive you."),
+            ContentVerse(4, "To anyone who feels lonely, misunderstood, weary, or doubtful: you are welcome here. In the Church of Jesus Christ, there is a place for you, a need for you, and a loving Savior who knows your heart."),
+            ContentVerse(5, "Let us shed anything in our lives or meetings that is cold, judgmental, or uncharitable, and let us truly reflect the radiance and warmth of our Redeemer."),
+            ContentVerse(6, "I testify that Jesus Christ lives, that He is our joy, and that His love never fails. In the name of Jesus Christ, amen.")
         ),
-        "gc/2026-10/holland-anchor-soul" to listOf(
-            ContentVerse(1, "My beloved friends and fellow travelers on this mortal road, I rejoice to be with you in this sacred hour."),
-            ContentVerse(2, "The Apostle Paul spoke of having hope as 'an anchor of the soul, both sure and stedfast, and which entereth into that within the veil.'"),
-            ContentVerse(3, "An anchor is useless on calm waters on a sunny afternoon. An anchor is forged and tested for the gale, for the pitch-black night, and for the howling storm that threatens to drive the ship onto the rocks."),
-            ContentVerse(4, "Brothers and sisters, we live in stormy times. Moral anchors are being uprooted across society, and spiritual disorientation is widespread."),
-            ContentVerse(5, "Yet our anchor is not an abstract philosophy, nor a political ideology, nor a shifting social consensus. Our anchor is the Living Son of the Living God, Jesus the Christ."),
-            ContentVerse(6, "When your personal trials threaten to overwhelm you—when health fails, when children wander, when financial security evaporates—cast your anchor deep into the rock of Gethsemane and the empty tomb."),
-            ContentVerse(7, "He who calmed the Sea of Galilee with the words 'Peace, be still' is the very same Savior who stands vigil over your family and your soul today."),
-            ContentVerse(8, "Do not fear. Do not yield to despair. Hold fast to your covenants, and trust His unfailing promises."),
-            ContentVerse(9, "I bear you my personal witness, as one who has felt His delivering grace in my darkest nights, that He lives, that He loves you, and that His victory is sure. In the name of Jesus Christ, amen.")
+        "gc/2024-10/holland-i-am-he" to listOf(
+            ContentVerse(1, "My beloved brothers and sisters, with deep emotion and profound gratitude, I stand before you today."),
+            ContentVerse(2, "When the Savior appeared to the multitude in the land Bountiful, He proclaimed: 'Behold, I am Jesus Christ, whom the prophets testified shall come into the world. Arise and come forth unto me.' And to the woman at the well, when she spoke of the coming Messiah, He declared simply: 'I that speak unto thee am he.'"),
+            ContentVerse(3, "Brothers and sisters, throughout all human distress, through the dark nights of sorrow, through personal illness and grief, the voice of the Savior still speaks to us: 'I am he.'"),
+            ContentVerse(4, "He is the bread of life to the hungry soul. He is the living water to the thirsty spirit. He is the light that shineth in darkness, and the darkness comprehendeth it not."),
+            ContentVerse(5, "Never give up hope. Never surrender to despair. No matter how deep the chasm of your trial, the infinite reach of the Atonement of Christ is deeper still."),
+            ContentVerse(6, "I bear solemn and joyful witness that Jesus of Nazareth is the Living Christ, the Savior and Redeemer of the world. In the sacred name of Jesus Christ, amen.")
         ),
-        "gc/2026-10/oaks-covenant-path-shifting-world" to listOf(
-            ContentVerse(1, "Brothers and sisters, we live in a world of rapid social and cultural change. Values that were once widely accepted are now questioned or abandoned."),
-            ContentVerse(2, "In such a time, the Lord's disciples need a sure compass and an immovable foundation. That foundation is found in the eternal covenants we make with God."),
-            ContentVerse(3, "The covenant path is not a series of arbitrary hurdles. It is the divine highway prepared by our Loving Father to mold our characters and qualify us for eternal life."),
-            ContentVerse(4, "When we are baptized and receive the Holy Ghost, when we receive the holy priesthood and make temple covenants, we take upon ourselves the name of Jesus Christ and commit to keep His commandments."),
-            ContentVerse(5, "The commandments of God are given not to restrict our freedom, but to protect us from spiritual perils and lead us to enduring joy."),
-            ContentVerse(6, "Let us never alter or dilute eternal gospel truths to conform to the passing fashions of worldly opinion. Truth is eternal, and God's laws do not change."),
-            ContentVerse(7, "I invite each of you to examine your standing on the covenant path. If you have stepped aside, return with faith. The Savior's arms are outstretched to receive you."),
-            ContentVerse(8, "I bear witness of God our Eternal Father and of His Beloved Son, Jesus Christ, who guides this Church through living prophets. In the name of Jesus Christ, amen.")
+        "gc/2024-10/freeman-live-up-privileges" to listOf(
+            ContentVerse(1, "My dear sisters and brothers, the Prophet Joseph Smith taught the early sisters in Nauvoo that it was their sacred privilege to live up to their covenants and receive the power of God in their lives."),
+            ContentVerse(2, "Today, that same invitation rings out to every woman and man in the Church of Jesus Christ: live up to your privileges!"),
+            ContentVerse(3, "Priesthood power is God's power flowing into the lives of covenant keepers. When we enter the waters of baptism, when we worship in the temple, and when we honor our covenants, we are endowed with His strength to guide our homes, heal our relationships, and minister to those in need."),
+            ContentVerse(4, "Do not underestimate what the Lord can do through your faithful prayers and consecrated actions. You have a divine mission in these latter days."),
+            ContentVerse(5, "I testify that God is eager to pour out His power and blessings upon all who walk with Him in faith. In the name of Jesus Christ, amen.")
         ),
-        "gc/2026-10/eyring-holy-ghost-companion" to listOf(
-            ContentVerse(1, "My dear brothers and sisters, I pray for the assistance of the Holy Ghost as I speak to you today."),
-            ContentVerse(2, "The greatest gift we can receive in this mortal journey, second only to the gift of the Savior's Atonement, is the companionship of the Holy Ghost."),
-            ContentVerse(3, "When we are confirmed members of the Church, we are given the divine charge: 'Receive the Holy Ghost.' That is an invitation to seek and cultivate His presence every day."),
-            ContentVerse(4, "The Holy Ghost speaks with a voice that is gentle, still, and small. It does not shout or compel. To hear that voice, we must quiet the clamor of our worldly lives."),
-            ContentVerse(5, "Daily scripture reading, personal prayer, and regular partaking of the sacrament are essential if we wish to retain the Spirit's guidance."),
-            ContentVerse(6, "When you face difficult decisions or agonizing trials, the Spirit will give you peace, light, and reassurance that you are not alone."),
-            ContentVerse(7, "I testify that God knows your name, loves you with an infinite love, and will guide your footsteps as you seek His Holy Spirit. In the sacred name of Jesus Christ, amen.")
+        "gc/2024-10/oaks-following-christ" to listOf(
+            ContentVerse(1, "Brothers and sisters, as followers of Christ, we are commanded to love God and to love our neighbors as ourselves."),
+            ContentVerse(2, "In a world rife with polarization, political contention, and angry rhetoric, disciples of Jesus Christ have a unique and vital duty: to be peacemakers."),
+            ContentVerse(3, "Being a peacemaker does not mean abandoning divine commandments or compromising truth. It means speaking truth in love, treating those who disagree with kindness, and rejecting the venomous spirit of contention."),
+            ContentVerse(4, "When we stand before the judgment seat of God, our standing will be determined not by worldly accolades or partisan victories, but by how faithfully we followed Jesus Christ and loved His children."),
+            ContentVerse(5, "May we follow Him with steadfast hearts and gentle hands, I pray in the name of Jesus Christ, amen.")
         )
     )
 }

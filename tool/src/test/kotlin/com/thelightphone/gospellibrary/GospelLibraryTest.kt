@@ -60,20 +60,31 @@ class GospelLibraryTest {
     }
 
     @Test
-    fun generalConferenceOctober2026Only() {
+    fun generalConferenceOctoberTalks() {
         val periods = GeneralConferenceData.conferencePeriods
-        assertEquals(1, periods.size)
-        assertEquals("October 2026", periods[0].name)
-        assertEquals(2026, periods[0].year)
+        assertTrue(periods.isNotEmpty())
 
-        val nelsonTalk = GeneralConferenceData.findTalk("gc/2026-10/nelson-confidence-god")
+        val october = periods.first()
+        assertEquals(5, october.sessions.size)
+
+        val totalTalks = october.sessions.sumOf { it.talks.size }
+        assertEquals(35, totalTalks)
+
+        val nelsonTalk = GeneralConferenceData.findTalk("gc/2024-10/nelson-lord-jesus-christ-will-come")
         assertNotNull(nelsonTalk)
-        assertEquals("Confidence in the Presence of God", nelsonTalk.title)
+        assertEquals("The Lord Jesus Christ Will Come Again", nelsonTalk.title)
+        assertEquals("President Russell M. Nelson", nelsonTalk.speaker)
 
-        val talkContent = GeneralConferenceData.getTalkContent("gc/2026-10/nelson-confidence-god")
-        assertEquals("Confidence in the Presence of God", talkContent.title)
-        assertTrue(talkContent.verses.size >= 9)
-        assertNotNull(talkContent.nextId)
+        val talkContent = GeneralConferenceData.getTalkContent("gc/2024-10/nelson-lord-jesus-christ-will-come")
+        assertEquals("The Lord Jesus Christ Will Come Again", talkContent.title)
+        assertTrue(talkContent.verses.size >= 5)
+
+        val hollandTalk = GeneralConferenceData.findTalk("gc/2024-10/holland-i-am-he")
+        assertNotNull(hollandTalk)
+
+        val freemanTalk = GeneralConferenceData.findTalk("gc/2024-10/freeman-live-up-privileges")
+        assertNotNull(freemanTalk)
+        assertEquals("President Emily Belle Freeman", freemanTalk.speaker)
     }
 
     @Test
