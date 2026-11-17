@@ -13,7 +13,7 @@ group = "com.thelightphone"
 ext["compileSdk"] = 36
 ext["minSdk"] = 34
 ext["targetSdk"] = 34
-ext["jvmTarget"] = "17"
+ext["jvmTarget"] = "21"
 ext["lintVersion"] = "31.12.3"
 
 val localProperties = java.util.Properties().apply {

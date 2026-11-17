@@ -24,7 +24,7 @@ dependencies {
 }
 
 kotlin {
-    jvmToolchain(17)
+    jvmToolchain(21)
 }
 
 // The SDK's catalog sits outside this included build, so read media3's version
