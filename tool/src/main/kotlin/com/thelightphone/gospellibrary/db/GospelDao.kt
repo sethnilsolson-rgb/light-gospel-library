@@ -29,6 +29,9 @@ interface BookmarkDao {
 
     @Query("SELECT COUNT(*) FROM bookmarks")
     fun getBookmarkCount(): Flow<Int>
+
+    @Query("DELETE FROM bookmarks WHERE contentId LIKE '%2024-10%'")
+    suspend fun deleteOctober2024Bookmarks()
 }
 
 @Dao
@@ -41,6 +44,9 @@ interface HighlightDao {
 
     @Query("DELETE FROM highlights WHERE contentId = :contentId AND verseNumber = :verseNumber")
     suspend fun removeHighlight(contentId: String, verseNumber: Int)
+
+    @Query("DELETE FROM highlights WHERE contentId LIKE '%2024-10%'")
+    suspend fun deleteOctober2024Highlights()
 }
 
 @Dao
@@ -68,4 +74,7 @@ interface ConferenceTalkDao {
 
     @Query("SELECT COUNT(*) FROM conference_talks")
     suspend fun getCount(): Int
+
+    @Query("DELETE FROM conference_talks WHERE periodId = '2024-10' OR talkId LIKE '%2024-10%'")
+    suspend fun deleteOctober2024Talks()
 }

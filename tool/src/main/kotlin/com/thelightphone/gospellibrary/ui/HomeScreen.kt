@@ -80,6 +80,9 @@ class HomeScreenViewModel(
         viewModelScope.launch {
             repository.syncConferenceIfOnline()
         }
+        viewModelScope.launch {
+            repository.cleanupOctober2024()
+        }
     }
 }
 

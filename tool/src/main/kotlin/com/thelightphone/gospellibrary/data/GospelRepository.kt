@@ -61,6 +61,12 @@ class GospelRepository(
         database.bookmarkDao().deleteBookmark(bookmark)
     }
 
+    suspend fun cleanupOctober2024() {
+        database.bookmarkDao().deleteOctober2024Bookmarks()
+        database.highlightDao().deleteOctober2024Highlights()
+        database.conferenceTalkDao().deleteOctober2024Talks()
+    }
+
     suspend fun recordLastRead(chapter: ContentChapter) {
         database.lastReadDao().saveLastRead(
             LastReadEntity(
