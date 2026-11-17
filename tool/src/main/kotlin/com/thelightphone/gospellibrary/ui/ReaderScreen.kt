@@ -221,6 +221,7 @@ class ReaderScreen(
         )
 
         var horizontalDragAccumulator by remember(chapter?.id) { mutableFloatStateOf(0f) }
+        var dragStartX by remember(chapter?.id) { mutableFloatStateOf(0f) }
 
         LightTheme(colors = themeColors) {
             Box(
@@ -229,12 +230,20 @@ class ReaderScreen(
                     .background(LightThemeTokens.colors.background)
                     .pointerInput(chapter?.id) {
                         detectHorizontalDragGestures(
-                            onDragStart = { horizontalDragAccumulator = 0f },
+                            onDragStart = { offset ->
+                                dragStartX = offset.x
+                                horizontalDragAccumulator = 0f
+                            },
                             onDragEnd = {
-                                if (horizontalDragAccumulator < -100f) {
+                                if (horizontalDragAccumulator > 70f) {
+                                    // Fast swipe from the side (or if no previous chapter) navigates back
+                                    if (dragStartX <= 300f || chapter?.prevId == null) {
+                                        goBack()
+                                    } else {
+                                        chapter?.prevId?.let { viewModel.loadContent(it) }
+                                    }
+                                } else if (horizontalDragAccumulator < -80f) {
                                     chapter?.nextId?.let { viewModel.loadContent(it) }
-                                } else if (horizontalDragAccumulator > 100f) {
-                                    chapter?.prevId?.let { viewModel.loadContent(it) }
                                 }
                                 horizontalDragAccumulator = 0f
                             },

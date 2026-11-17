@@ -53,6 +53,7 @@ class BookListScreen(
                 modifier = Modifier
                     .fillMaxSize()
                     .background(LightThemeTokens.colors.background)
+                    .swipeToBack { goBack() }
             ) {
                 Column(modifier = Modifier.fillMaxSize()) {
                     LightTopBar(
