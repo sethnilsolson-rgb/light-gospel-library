@@ -125,6 +125,15 @@ enum class GospelLanguage(
         dictKey = "rus",
         dictLabel = "Russian–English Lookup",
         iso2 = "ru",
+    ),
+    CES(
+        code = "ces",
+        shortBadge = "CS",
+        englishName = "Czech",
+        nativeName = "Čeština",
+        dictKey = "ces",
+        dictLabel = "Czech–English Dictionary (Wiktionary)",
+        iso2 = "cs",
     );
 
     companion object {

@@ -26,6 +26,8 @@ object LanguageDictionaryService {
         "https://www.mdbg.net/chinese/export/cedict/cedict_1_0_ts_utf-8_mdbg.txt.gz"
     private const val EDICT2_GZ_URL =
         "https://www.edrdg.org/pub/Nihongo/edict2.gz"
+    private const val CZECH_WIKTIONARY_TSV_URL =
+        "https://raw.githubusercontent.com/Vuizur/Wiktionary-Dictionaries/master/Czech-English%20Wiktionary%20dictionary.tsv"
 
     private fun freedictUrl(pair: String) =
         "https://raw.githubusercontent.com/freedict/fd-dictionaries/master/$pair/$pair.tei"
@@ -58,6 +60,7 @@ object LanguageDictionaryService {
                 "spa" -> downloadFreeDictTei("spa", "spa-eng", dao, onProgress)
                 "por" -> downloadFreeDictTei("por", "por-eng", dao, onProgress)
                 "fra" -> downloadFreeDictTei("fra", "fra-eng", dao, onProgress)
+                "ces" -> downloadWiktionaryTsv("ces", CZECH_WIKTIONARY_TSV_URL, "Czech", dao, onProgress)
                 else -> {
                     // Korean, German, Tagalog, Italian, Russian use instant online lookup
                     // that automatically caches every looked-up word offline in Room.
@@ -498,6 +501,102 @@ object LanguageDictionaryService {
         }
         onProgress("Dictionary ready ($inserted words)")
         return inserted
+    }
+
+    private suspend fun downloadWiktionaryTsv(
+        dictKey: String,
+        url: String,
+        languageLabel: String,
+        dao: LanguageDictionaryDao,
+        onProgress: (String) -> Unit,
+    ): Int {
+        onProgress("Downloading $languageLabel–English dictionary...")
+        dao.deleteDictionary(dictKey)
+        var connection: HttpURLConnection? = null
+        var inserted = 0
+        val batch = ArrayList<LanguageDictEntryEntity>(2000)
+
+        try {
+            connection = openConnection(url, readTimeoutMs = 30000)
+            BufferedReader(InputStreamReader(connection.inputStream, Charsets.UTF_8)).use { reader ->
+                var line: String? = reader.readLine()
+                while (line != null) {
+                    val parsed = parseWiktionaryTsvLine(dictKey, line)
+                    for (entry in parsed) {
+                        batch.add(entry)
+                        if (batch.size >= 2000) {
+                            dao.insertEntries(batch)
+                            inserted += batch.size
+                            batch.clear()
+                            if (inserted % 20000 == 0) {
+                                onProgress("Indexing $languageLabel dictionary... $inserted forms")
+                            }
+                        }
+                    }
+                    line = reader.readLine()
+                }
+            }
+            if (batch.isNotEmpty()) {
+                dao.insertEntries(batch)
+                inserted += batch.size
+                batch.clear()
+            }
+        } finally {
+            connection?.disconnect()
+        }
+        onProgress("$languageLabel dictionary ready ($inserted forms)")
+        return inserted
+    }
+
+    internal fun parseWiktionaryTsvLine(
+        dictKey: String,
+        line: String,
+    ): List<LanguageDictEntryEntity> {
+        val tabIdx = line.indexOf('\t')
+        if (tabIdx <= 0 || tabIdx >= line.lastIndex) return emptyList()
+
+        val rawForms = line.substring(0, tabIdx)
+            .split('|')
+            .map { it.trim() }
+            .filter { it.isNotBlank() }
+        if (rawForms.isEmpty()) return emptyList()
+
+        val lemma = rawForms.first()
+        val rawHtml = line.substring(tabIdx + 1)
+        val formattedDef = formatWiktionaryHtml(rawHtml)
+        if (formattedDef.isBlank()) return emptyList()
+
+        val seen = HashSet<String>()
+        val results = ArrayList<LanguageDictEntryEntity>(rawForms.size)
+        for (form in rawForms) {
+            val key = form.lowercase()
+            if (seen.add(key)) {
+                results.add(
+                    LanguageDictEntryEntity(
+                        dictKey = dictKey,
+                        headword = key,
+                        reading = if (form.equals(lemma, ignoreCase = true)) "" else lemma,
+                        definition = formattedDef,
+                    )
+                )
+            }
+        }
+        return results
+    }
+
+    private fun formatWiktionaryHtml(html: String): String {
+        val withSeparators = html
+            .replace(Regex("""<br\s*/?>""", RegexOption.IGNORE_CASE), " — ")
+            .replace(Regex("""</li>\s*<li[^>]*>""", RegexOption.IGNORE_CASE), "; ")
+            .replace(Regex("""</?ol[^>]*>""", RegexOption.IGNORE_CASE), " ")
+            .replace(Regex("""</?ul[^>]*>""", RegexOption.IGNORE_CASE), " ")
+            .replace(Regex("""</?li[^>]*>""", RegexOption.IGNORE_CASE), " ")
+        val cleaned = ConferenceSyncService.cleanHtmlText(withSeparators)
+            .replace(Regex("""\s+—\s+"""), " — ")
+            .replace(Regex("""^—\s*"""), "")
+            .replace(Regex("""\s*;\s*"""), "; ")
+            .trim()
+        return if (cleaned.length > 380) cleaned.take(377) + "..." else cleaned
     }
 
     /**

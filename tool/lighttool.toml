@@ -1,8 +1,8 @@
 [tool]
 id = "com.setholson.gospellibrary"
 label = "Gospel Library"
-versionCode = 6
-versionName = "1.0.5"
+versionCode = 7
+versionName = "1.0.6"
 permissions = ["android.permission.INTERNET"]
 capabilities = []
 # for the LightOS emulator, use the line below and build with -DlightSdk.allowAltServerPackage=true

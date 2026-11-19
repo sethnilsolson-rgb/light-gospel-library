@@ -221,13 +221,14 @@ class GospelLibraryTest {
 
     @Test
     fun gospelLanguagesMetadataAndDownloadableList() {
-        assertEquals(12, GospelLanguage.entries.size)
-        assertEquals(11, GospelLanguage.downloadableLanguages.size)
+        assertEquals(13, GospelLanguage.entries.size)
+        assertEquals(12, GospelLanguage.downloadableLanguages.size)
         assertFalse(GospelLanguage.downloadableLanguages.contains(GospelLanguage.ENG))
         assertEquals(GospelLanguage.ZHO, GospelLanguage.fromCode("zho"))
         assertEquals(GospelLanguage.ZHS, GospelLanguage.fromCode("zhs"))
         assertEquals(GospelLanguage.SPA, GospelLanguage.fromCode("spa"))
         assertEquals(GospelLanguage.JPN, GospelLanguage.fromCode("jpn"))
+        assertEquals(GospelLanguage.CES, GospelLanguage.fromCode("ces"))
         assertEquals(GospelLanguage.ENG, GospelLanguage.fromCode("unknown"))
         // Traditional and Simplified Chinese share the CC-CEDICT dictionary key
         assertEquals(GospelLanguage.ZHO.dictKey, GospelLanguage.ZHS.dictKey)
@@ -326,5 +327,23 @@ class GospelLibraryTest {
         assertEquals(2, roundTrip.size)
         assertEquals(1, roundTrip[0].number)
         assertEquals(null, roundTrip[1].number)
+    }
+
+    @Test
+    fun czechWiktionaryTsvParsingWithInflections() {
+        val sampleLine =
+            "Abrahám|Abrahámem|Abrahámovi\t<i>name</i><br><ol><li>Abraham, a prophet in the Old Testament</li><li>Patriarch</li></ol>"
+        val entries = LanguageDictionaryService.parseWiktionaryTsvLine("ces", sampleLine)
+        assertEquals(3, entries.size)
+
+        val base = entries.first { it.headword == "abrahám" }
+        assertEquals("", base.reading)
+        assertTrue(base.definition.contains("Abraham, a prophet in the Old Testament"))
+        assertTrue(base.definition.contains("Patriarch"))
+        assertFalse(base.definition.contains("<li>"))
+
+        val inflected = entries.first { it.headword == "abrahámem" }
+        assertEquals("Abrahám", inflected.reading)
+        assertEquals(base.definition, inflected.definition)
     }
 }
