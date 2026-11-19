@@ -48,6 +48,7 @@ import com.thelightphone.sdk.ui.LightTopBar
 import com.thelightphone.sdk.ui.LightTopBarCenter
 import com.thelightphone.sdk.ui.gridUnitsAsDp
 import com.thelightphone.sdk.ui.lightClickable
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -118,11 +119,10 @@ class ReaderViewModel(
     private val _isBookmarked = MutableStateFlow(false)
     val isBookmarked: StateFlow<Boolean> = _isBookmarked.asStateFlow()
 
-    private val _highlights = MutableStateFlow<List<Int>>(emptyList())
-    val highlights: StateFlow<List<Int>> = _highlights.asStateFlow()
-
     private val _fontSize = MutableStateFlow(ReaderFontSize.REGULAR)
     val fontSize: StateFlow<ReaderFontSize> = _fontSize.asStateFlow()
+
+    private var bookmarkJob: Job? = null
 
     override fun onScreenShow(screen: SimpleLightScreen<Unit>) {
         super.onScreenShow(screen)
@@ -133,18 +133,14 @@ class ReaderViewModel(
         _contentId.value = id
         val loaded = repository.getContent(id)
         _chapter.value = loaded
+        bookmarkJob?.cancel()
         if (loaded != null) {
             viewModelScope.launch {
                 repository.recordLastRead(loaded)
             }
-            viewModelScope.launch {
+            bookmarkJob = viewModelScope.launch {
                 repository.isChapterBookmarked(id).collect { bookmarked ->
                     _isBookmarked.value = bookmarked
-                }
-            }
-            viewModelScope.launch {
-                repository.getHighlightedVerses(id).collect { list ->
-                    _highlights.value = list
                 }
             }
         }
@@ -154,13 +150,6 @@ class ReaderViewModel(
         val current = _chapter.value ?: return
         viewModelScope.launch {
             repository.toggleChapterBookmark(current, _isBookmarked.value)
-        }
-    }
-
-    fun toggleVerseHighlight(verseNumber: Int) {
-        val id = _contentId.value
-        viewModelScope.launch {
-            repository.toggleVerseHighlight(id, verseNumber, _highlights.value)
         }
     }
 
@@ -183,7 +172,9 @@ class ReaderScreen(
             lightContext.buildDatabase(
                 GospelDatabase::class.java,
                 GospelRepository.DATABASE_NAME
-            )
+            ) {
+                fallbackToDestructiveMigration()
+            }
         },
         assetStreamProvider = { path ->
             lightContext.readAsset(path).inputStream()
@@ -200,7 +191,6 @@ class ReaderScreen(
         val themeColors by LightThemeController.colors.collectAsState()
         val chapter by viewModel.chapter.collectAsState()
         val isBookmarked by viewModel.isBookmarked.collectAsState()
-        val highlights by viewModel.highlights.collectAsState()
         val fontSize by viewModel.fontSize.collectAsState()
 
         val textVariant = when (fontSize) {
@@ -324,16 +314,10 @@ class ReaderScreen(
                                 Spacer(modifier = Modifier.height(12.dp))
 
                                 currentChapter.verses.forEach { verse ->
-                                    val isHighlighted = verse.number != null && verse.number in highlights
                                     Row(
                                         modifier = Modifier
                                             .fillMaxWidth()
-                                            .padding(vertical = 8.dp)
-                                            .lightClickable {
-                                                verse.number?.let { num ->
-                                                    viewModel.toggleVerseHighlight(num)
-                                                }
-                                            },
+                                            .padding(end = 1.5f.gridUnitsAsDp(), top = 6.dp, bottom = 8.dp),
                                         verticalAlignment = Alignment.Top
                                     ) {
                                         verse.number?.let { num ->
@@ -347,7 +331,6 @@ class ReaderScreen(
                                         LightText(
                                             text = verse.text,
                                             variant = textVariant,
-                                            underline = isHighlighted,
                                             modifier = Modifier.weight(1f)
                                         )
                                     }
@@ -359,7 +342,7 @@ class ReaderScreen(
                                 Row(
                                     modifier = Modifier
                                         .fillMaxWidth()
-                                        .padding(top = 8.dp, bottom = 8.dp),
+                                        .padding(end = 1.5f.gridUnitsAsDp(), top = 8.dp, bottom = 12.dp),
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
                                     if (currentChapter.prevId != null) {

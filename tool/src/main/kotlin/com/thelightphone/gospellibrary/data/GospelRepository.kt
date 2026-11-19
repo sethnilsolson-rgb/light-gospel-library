@@ -3,30 +3,37 @@ package com.thelightphone.gospellibrary.data
 import com.thelightphone.gospellibrary.db.BookmarkEntity
 import com.thelightphone.gospellibrary.db.ConferenceTalkEntity
 import com.thelightphone.gospellibrary.db.GospelDatabase
-import com.thelightphone.gospellibrary.db.HighlightEntity
 import com.thelightphone.gospellibrary.db.LastReadEntity
 import com.thelightphone.gospellibrary.model.ConferencePeriod
 import com.thelightphone.gospellibrary.model.ContentChapter
-import com.thelightphone.gospellibrary.model.ContentType
-import com.thelightphone.gospellibrary.model.ContentVerse
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.runBlocking
 import java.io.InputStream
+
+data class ConferenceSyncStatus(
+    val message: String,
+    val downloadedNew: Boolean,
+)
 
 class GospelRepository(
     private val database: GospelDatabase,
     var assetStreamProvider: ((String) -> InputStream?)? = null,
 ) {
+    init {
+        GeneralConferenceData.ensureBundledLoaded(assetStreamProvider)
+    }
+
     val bookmarks: Flow<List<BookmarkEntity>> = database.bookmarkDao().getAllBookmarks()
     val bookmarkCount: Flow<Int> = database.bookmarkDao().getBookmarkCount()
     val lastRead: Flow<LastReadEntity?> = database.lastReadDao().getLastRead()
     val conferenceTalks: Flow<List<ConferenceTalkEntity>> = database.conferenceTalkDao().getAllTalks()
 
+    fun ensureConferenceAssetLoaded() {
+        GeneralConferenceData.ensureBundledLoaded(assetStreamProvider)
+    }
+
     fun isChapterBookmarked(contentId: String): Flow<Boolean> =
         database.bookmarkDao().isChapterBookmarked(contentId)
-
-    fun getHighlightedVerses(contentId: String): Flow<List<Int>> =
-        database.highlightDao().getHighlightedVerseNumbers(contentId)
 
     suspend fun toggleChapterBookmark(chapter: ContentChapter, isCurrentlyBookmarked: Boolean) {
         if (isCurrentlyBookmarked) {
@@ -39,19 +46,6 @@ class GospelRepository(
                     title = chapter.title,
                     snippet = preview,
                     verseNumber = null,
-                )
-            )
-        }
-    }
-
-    suspend fun toggleVerseHighlight(contentId: String, verseNumber: Int, currentHighlights: List<Int>) {
-        if (verseNumber in currentHighlights) {
-            database.highlightDao().removeHighlight(contentId, verseNumber)
-        } else {
-            database.highlightDao().insertHighlight(
-                HighlightEntity(
-                    contentId = contentId,
-                    verseNumber = verseNumber,
                 )
             )
         }
@@ -77,20 +71,50 @@ class GospelRepository(
         )
     }
 
-    suspend fun syncConferenceIfOnline(customUrl: String? = null): Boolean {
-        val url = customUrl ?: ConferenceSyncService.DEFAULT_UPDATE_URL
-        val result = ConferenceSyncService.fetchRemoteTalks(url)
-        return result.map { talks ->
-            if (talks.isNotEmpty()) {
-                database.conferenceTalkDao().insertTalks(talks)
-                true
-            } else {
-                false
+    /**
+     * Checks churchofjesuschrist.org for any new General Conference sessions released after
+     * the ones already bundled or stored locally, downloads them in full, and saves to Room.
+     */
+    suspend fun syncConferenceIfOnline(): ConferenceSyncStatus {
+        ensureConferenceAssetLoaded()
+        val dbTalks = database.conferenceTalkDao().getAllTalksSync()
+        val existingPeriodIds = buildSet {
+            if (GeneralConferenceData.getBundledTalkEntities().isNotEmpty()) {
+                add("2026-10")
             }
-        }.getOrDefault(false)
+            dbTalks
+                .groupBy { it.periodId }
+                .filterValues { it.size >= 10 }
+                .keys
+                .forEach { add(it) }
+        }
+
+        val syncResult = ConferenceSyncService.fetchMissingConferences(existingPeriodIds)
+        if (syncResult.downloadedTalks.isNotEmpty()) {
+            database.conferenceTalkDao().insertTalks(syncResult.downloadedTalks)
+            val names = syncResult.downloadedPeriods.joinToString(", ")
+            return ConferenceSyncStatus(
+                message = "Downloaded $names (${syncResult.downloadedTalks.size} talks)",
+                downloadedNew = true,
+            )
+        }
+
+        if (syncResult.hadNetworkError) {
+            return ConferenceSyncStatus(
+                message = "Unable to connect. Check internet and try again.",
+                downloadedNew = false,
+            )
+        }
+
+        val latestName = GeneralConferenceData.getConferencePeriods(dbTalks).firstOrNull()?.name ?: "October 2026"
+        return ConferenceSyncStatus(
+            message = "Up to date ($latestName)",
+            downloadedNew = false,
+        )
     }
 
     suspend fun getConferencePeriods(): List<ConferencePeriod> {
+        ensureConferenceAssetLoaded()
         val dbTalks = database.conferenceTalkDao().getAllTalksSync()
         return GeneralConferenceData.getConferencePeriods(dbTalks)
     }
@@ -123,26 +147,11 @@ class GospelRepository(
                 } else null
             }
             contentId.startsWith("gc/") -> {
-                val dbTalk = runBlocking {
-                    database.conferenceTalkDao().getTalk(contentId)
+                ensureConferenceAssetLoaded()
+                val dbTalks = runBlocking {
+                    database.conferenceTalkDao().getAllTalksSync()
                 }
-                if (dbTalk != null) {
-                    val verses = dbTalk.paragraphs.split("\n\n")
-                        .filter { it.isNotBlank() }
-                        .mapIndexed { idx, txt -> ContentVerse(idx + 1, txt) }
-
-                    ContentChapter(
-                        id = dbTalk.talkId,
-                        type = ContentType.GENERAL_CONFERENCE,
-                        title = dbTalk.title,
-                        subtitle = "${dbTalk.speaker} • ${dbTalk.periodName}",
-                        verses = verses,
-                        prevId = null,
-                        nextId = null,
-                    )
-                } else {
-                    GeneralConferenceData.getTalkContent(contentId)
-                }
+                GeneralConferenceData.getTalkContent(contentId, dbTalks)
             }
             else -> null
         }
@@ -163,6 +172,7 @@ class GospelRepository(
             }.apply {
                 if (assetStreamProvider != null && this.assetStreamProvider == null) {
                     this.assetStreamProvider = assetStreamProvider
+                    ensureConferenceAssetLoaded()
                 }
             }
         }

@@ -1,16 +1,20 @@
 package com.thelightphone.gospellibrary.ui
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewModelScope
@@ -35,6 +39,7 @@ import com.thelightphone.sdk.ui.LightTopBar
 import com.thelightphone.sdk.ui.LightTopBarCenter
 import com.thelightphone.sdk.ui.gridUnitsAsDp
 import com.thelightphone.sdk.ui.lightClickable
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -44,18 +49,64 @@ class ConferenceListViewModel(
     private val repository: GospelRepository,
 ) : LightViewModel<Unit>() {
 
-    private val _periods = MutableStateFlow(GeneralConferenceData.conferencePeriods)
+    private val _periods = MutableStateFlow<List<ConferencePeriod>>(emptyList())
     val periods: StateFlow<List<ConferencePeriod>> = _periods.asStateFlow()
+
+    private val _selectedPeriodId = MutableStateFlow<String?>(null)
+    val selectedPeriodId: StateFlow<String?> = _selectedPeriodId.asStateFlow()
+
+    private val _isSyncing = MutableStateFlow(false)
+    val isSyncing: StateFlow<Boolean> = _isSyncing.asStateFlow()
+
+    private val _syncMessage = MutableStateFlow<String?>(null)
+    val syncMessage: StateFlow<String?> = _syncMessage.asStateFlow()
+
+    private var collectJob: Job? = null
+    private var syncJob: Job? = null
 
     override fun onScreenShow(screen: SimpleLightScreen<Unit>) {
         super.onScreenShow(screen)
-        viewModelScope.launch {
+        repository.ensureConferenceAssetLoaded()
+        _periods.value = GeneralConferenceData.getConferencePeriods()
+        if (_selectedPeriodId.value == null) {
+            _selectedPeriodId.value = _periods.value.firstOrNull()?.id
+        }
+
+        collectJob?.cancel()
+        collectJob = viewModelScope.launch {
             repository.conferenceTalks.collect { talks ->
-                _periods.value = GeneralConferenceData.getConferencePeriods(talks)
+                val updated = GeneralConferenceData.getConferencePeriods(talks)
+                _periods.value = updated
+                if (_selectedPeriodId.value == null || updated.none { it.id == _selectedPeriodId.value }) {
+                    _selectedPeriodId.value = updated.firstOrNull()?.id
+                }
             }
         }
-        viewModelScope.launch {
-            repository.syncConferenceIfOnline()
+    }
+
+    fun selectPeriod(periodId: String) {
+        _selectedPeriodId.value = periodId
+    }
+
+    fun checkForNewConference() {
+        if (_isSyncing.value) return
+        syncJob?.cancel()
+        syncJob = viewModelScope.launch {
+            _isSyncing.value = true
+            _syncMessage.value = "Checking for new conference talks..."
+            try {
+                val outcome = repository.syncConferenceIfOnline()
+                _syncMessage.value = outcome.message
+                if (outcome.downloadedNew) {
+                    val refreshed = repository.getConferencePeriods()
+                    _periods.value = refreshed
+                    _selectedPeriodId.value = refreshed.firstOrNull()?.id
+                }
+            } catch (_: Throwable) {
+                _syncMessage.value = "Unable to check right now. Try again later."
+            } finally {
+                _isSyncing.value = false
+            }
         }
     }
 }
@@ -87,7 +138,11 @@ class ConferenceListScreen(
     override fun Content() {
         val themeColors by LightThemeController.colors.collectAsState()
         val periods by viewModel.periods.collectAsState()
-        val conference = periods.firstOrNull()
+        val selectedPeriodId by viewModel.selectedPeriodId.collectAsState()
+        val isSyncing by viewModel.isSyncing.collectAsState()
+        val syncMessage by viewModel.syncMessage.collectAsState()
+
+        val conference = periods.firstOrNull { it.id == selectedPeriodId } ?: periods.firstOrNull()
 
         LightTheme(colors = themeColors) {
             Box(
@@ -112,14 +167,79 @@ class ConferenceListScreen(
                             .fillMaxWidth()
                             .padding(start = 1.5f.gridUnitsAsDp())
                     ) {
-                        Spacer(modifier = Modifier.height(12.dp))
+                        Spacer(modifier = Modifier.height(10.dp))
+
+                        // Easy one-tap sync for new General Conferences
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(end = 1.5f.gridUnitsAsDp(), bottom = 14.dp)
+                                .border(
+                                    width = 1.dp,
+                                    color = LightThemeTokens.colors.content.copy(alpha = 0.4f),
+                                    shape = RoundedCornerShape(4.dp)
+                                )
+                                .lightClickable { viewModel.checkForNewConference() }
+                                .padding(horizontal = 12.dp, vertical = 10.dp)
+                        ) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                LightText(
+                                    text = if (isSyncing) "Checking for New Talks..." else "Check for New Conference",
+                                    variant = LightTextVariant.Detail,
+                                    modifier = Modifier.weight(1f)
+                                )
+                                LightText(
+                                    text = if (isSyncing) "..." else "↻",
+                                    variant = LightTextVariant.Detail
+                                )
+                            }
+                            syncMessage?.let { msg ->
+                                LightText(
+                                    text = msg,
+                                    variant = LightTextVariant.Detail,
+                                    lighten = true,
+                                    modifier = Modifier.padding(top = 4.dp)
+                                )
+                            }
+                        }
+
+                        // Period selector if more than one conference is available (Oct 2026+)
+                        if (periods.size > 1) {
+                            LightText(
+                                text = "CONFERENCES",
+                                variant = LightTextVariant.Detail,
+                                lighten = true,
+                                modifier = Modifier.padding(bottom = 6.dp)
+                            )
+                            periods.forEach { period ->
+                                val isSelected = period.id == conference?.id
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(end = 1.5f.gridUnitsAsDp(), bottom = 6.dp)
+                                        .lightClickable { viewModel.selectPeriod(period.id) }
+                                        .padding(vertical = 4.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    LightText(
+                                        text = if (isSelected) "• ${period.name}" else period.name,
+                                        variant = if (isSelected) LightTextVariant.Subheading else LightTextVariant.Paragraph,
+                                        lighten = !isSelected
+                                    )
+                                }
+                            }
+                            Spacer(modifier = Modifier.height(10.dp))
+                        }
 
                         conference?.sessions?.forEachIndexed { index, session ->
                             val isLast = index == conference.sessions.lastIndex
                             Column(
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .padding(bottom = if (isLast) 8.dp else 16.dp)
+                                    .padding(end = 1.5f.gridUnitsAsDp(), bottom = if (isLast) 12.dp else 18.dp)
                             ) {
                                 LightText(
                                     text = session.sessionName.uppercase(),
@@ -143,12 +263,14 @@ class ConferenceListScreen(
                                             text = talk.title,
                                             variant = LightTextVariant.Subheading
                                         )
-                                        LightText(
-                                            text = talk.speaker,
-                                            variant = LightTextVariant.Detail,
-                                            lighten = true,
-                                            modifier = Modifier.padding(top = 2.dp)
-                                        )
+                                        if (talk.speaker.isNotBlank()) {
+                                            LightText(
+                                                text = talk.speaker,
+                                                variant = LightTextVariant.Detail,
+                                                lighten = true,
+                                                modifier = Modifier.padding(top = 2.dp)
+                                            )
+                                        }
                                     }
                                 }
                             }

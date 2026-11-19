@@ -39,6 +39,7 @@ import com.thelightphone.sdk.ui.LightTopBar
 import com.thelightphone.sdk.ui.LightTopBarCenter
 import com.thelightphone.sdk.ui.gridUnitsAsDp
 import com.thelightphone.sdk.ui.lightClickable
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -57,31 +58,51 @@ class HomeScreenViewModel(
     private val _latestConferenceTitle = MutableStateFlow("October 2026 Conference")
     val latestConferenceTitle: StateFlow<String> = _latestConferenceTitle.asStateFlow()
 
+    private val _latestConferenceSubtitle = MutableStateFlow("38 complete talks • Tap to read or update")
+    val latestConferenceSubtitle: StateFlow<String> = _latestConferenceSubtitle.asStateFlow()
+
+    private var lastReadJob: Job? = null
+    private var bookmarkJob: Job? = null
+    private var conferenceJob: Job? = null
+    private var hasSyncedOnLaunch = false
+
     override fun onScreenShow(screen: SimpleLightScreen<Unit>) {
         super.onScreenShow(screen)
-        viewModelScope.launch {
+        repository.ensureConferenceAssetLoaded()
+
+        lastReadJob?.cancel()
+        lastReadJob = viewModelScope.launch {
             repository.lastRead.collect { entity ->
                 _lastRead.value = entity
             }
         }
-        viewModelScope.launch {
+
+        bookmarkJob?.cancel()
+        bookmarkJob = viewModelScope.launch {
             repository.bookmarkCount.collect { count ->
                 _bookmarkCount.value = count
             }
         }
-        viewModelScope.launch {
+
+        conferenceJob?.cancel()
+        conferenceJob = viewModelScope.launch {
             repository.conferenceTalks.collect { talks ->
                 val periods = GeneralConferenceData.getConferencePeriods(talks)
-                val topPeriod = periods.firstOrNull()?.name ?: "October 2026"
-                _latestConferenceTitle.value = "$topPeriod Conference"
+                val topPeriod = periods.firstOrNull()
+                if (topPeriod != null) {
+                    _latestConferenceTitle.value = "${topPeriod.name} Conference"
+                    val talkCount = topPeriod.sessions.sumOf { it.talks.size }
+                    _latestConferenceSubtitle.value = "$talkCount complete talks • Tap to read or update"
+                }
             }
         }
-        // Auto-update conference in the background if connected to network
-        viewModelScope.launch {
-            repository.syncConferenceIfOnline()
-        }
-        viewModelScope.launch {
-            repository.cleanupOctober2024()
+
+        if (!hasSyncedOnLaunch) {
+            hasSyncedOnLaunch = true
+            viewModelScope.launch {
+                repository.cleanupOctober2024()
+                repository.syncConferenceIfOnline()
+            }
         }
     }
 }
@@ -116,6 +137,7 @@ class HomeScreen(
         val lastRead by viewModel.lastRead.collectAsState()
         val bookmarkCount by viewModel.bookmarkCount.collectAsState()
         val latestConferenceTitle by viewModel.latestConferenceTitle.collectAsState()
+        val latestConferenceSubtitle by viewModel.latestConferenceSubtitle.collectAsState()
 
         LightTheme(colors = themeColors) {
             Box(
@@ -178,7 +200,7 @@ class HomeScreen(
                             Spacer(modifier = Modifier.height(16.dp))
                         }
 
-                        // Bookmarks & Underlines Quick Entry
+                        // Bookmarks Quick Entry
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -192,11 +214,11 @@ class HomeScreen(
                         ) {
                             Column(modifier = Modifier.weight(1f)) {
                                 LightText(
-                                    text = "Bookmarks & Underlines",
+                                    text = "Bookmarks",
                                     variant = LightTextVariant.Subheading
                                 )
                                 LightText(
-                                    text = "$bookmarkCount saved passages",
+                                    text = if (bookmarkCount == 1) "1 saved bookmark" else "$bookmarkCount saved bookmarks",
                                     variant = LightTextVariant.Detail,
                                     lighten = true,
                                     modifier = Modifier.padding(top = 2.dp)
@@ -271,7 +293,7 @@ class HomeScreen(
                                 variant = LightTextVariant.Subheading
                             )
                             LightText(
-                                text = "196th Semiannual General Conference",
+                                text = latestConferenceSubtitle,
                                 variant = LightTextVariant.Detail,
                                 lighten = true,
                                 modifier = Modifier.padding(top = 2.dp)

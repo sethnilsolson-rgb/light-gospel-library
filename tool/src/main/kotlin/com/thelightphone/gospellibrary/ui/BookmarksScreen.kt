@@ -73,7 +73,9 @@ class BookmarksScreen(
             lightContext.buildDatabase(
                 GospelDatabase::class.java,
                 GospelRepository.DATABASE_NAME
-            )
+            ) {
+                fallbackToDestructiveMigration()
+            }
         },
         assetStreamProvider = { path ->
             lightContext.readAsset(path).inputStream()
@@ -122,7 +124,7 @@ class BookmarksScreen(
                                     modifier = Modifier.padding(bottom = 8.dp)
                                 )
                                 LightText(
-                                    text = "Tap the star icon while reading any chapter or talk to save it here.",
+                                    text = "Tap the bookmark icon while reading any chapter or talk to save it here.",
                                     variant = LightTextVariant.Detail,
                                     lighten = true
                                 )
