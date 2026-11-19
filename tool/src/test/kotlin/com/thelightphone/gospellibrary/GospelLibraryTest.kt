@@ -2,7 +2,11 @@ package com.thelightphone.gospellibrary
 
 import com.thelightphone.gospellibrary.data.ConferenceSyncService
 import com.thelightphone.gospellibrary.data.GeneralConferenceData
+import com.thelightphone.gospellibrary.data.LanguageContentService
+import com.thelightphone.gospellibrary.data.LanguageDictionaryService
 import com.thelightphone.gospellibrary.data.StandardWorksData
+import com.thelightphone.gospellibrary.model.ContentVerse
+import com.thelightphone.gospellibrary.model.GospelLanguage
 import com.thelightphone.gospellibrary.model.ReaderFontSize
 import java.io.File
 import kotlin.test.Test
@@ -213,5 +217,114 @@ class GospelLibraryTest {
         assertEquals("Aa", ReaderFontSize.REGULAR.displayLabel)
         assertEquals("Aa-", ReaderFontSize.COMPACT.displayLabel)
         assertEquals("Aa+", ReaderFontSize.LARGE.displayLabel)
+    }
+
+    @Test
+    fun gospelLanguagesMetadataAndDownloadableList() {
+        assertEquals(12, GospelLanguage.entries.size)
+        assertEquals(11, GospelLanguage.downloadableLanguages.size)
+        assertFalse(GospelLanguage.downloadableLanguages.contains(GospelLanguage.ENG))
+        assertEquals(GospelLanguage.ZHO, GospelLanguage.fromCode("zho"))
+        assertEquals(GospelLanguage.ZHS, GospelLanguage.fromCode("zhs"))
+        assertEquals(GospelLanguage.SPA, GospelLanguage.fromCode("spa"))
+        assertEquals(GospelLanguage.JPN, GospelLanguage.fromCode("jpn"))
+        assertEquals(GospelLanguage.ENG, GospelLanguage.fromCode("unknown"))
+        // Traditional and Simplified Chinese share the CC-CEDICT dictionary key
+        assertEquals(GospelLanguage.ZHO.dictKey, GospelLanguage.ZHS.dictKey)
+    }
+
+    @Test
+    fun pinyinToneMarksAndCedictParsing() {
+        assertEquals("fú yīn", LanguageDictionaryService.formatNumberedPinyin("fu2 yin1"))
+        assertEquals("lǜ", LanguageDictionaryService.formatNumberedPinyin("lu:4"))
+        assertEquals("nǐ hǎo", LanguageDictionaryService.formatNumberedPinyin("ni3 hao3"))
+
+        val cedictLine = "福音 福音 [fu2 yin1] /gospel/good news/"
+        val sameFormEntries = LanguageDictionaryService.parseCedictLine(cedictLine)
+        assertEquals(1, sameFormEntries.size)
+        assertEquals("福音", sameFormEntries.first().headword)
+        assertEquals("fú yīn", sameFormEntries.first().reading)
+        assertTrue(sameFormEntries.first().definition.contains("gospel"))
+
+        val tradSimpLine = "耶穌 耶稣 [Ye1 su1] /Jesus/"
+        val bothEntries = LanguageDictionaryService.parseCedictLine(tradSimpLine)
+        assertEquals(2, bothEntries.size)
+        assertTrue(bothEntries.any { it.headword == "耶穌" })
+        assertTrue(bothEntries.any { it.headword == "耶稣" })
+    }
+
+    @Test
+    fun webster1828AndEdict2ParsingAndKjvStemming() {
+        val websterRow = "\"FAITH\",\"Belief; the assent of the mind to the truth of what is declared by another.\""
+        val websterEntry = LanguageDictionaryService.parseWebster1828CsvRow(websterRow)
+        assertNotNull(websterEntry)
+        assertEquals("eng_1828", websterEntry.dictKey)
+        assertEquals("faith", websterEntry.headword)
+        assertTrue(websterEntry.definition.contains("assent of the mind"))
+
+        val edictLine = "福音 [ふくいん] /(n) gospel; good news/(P)/EntL1498700X/"
+        val edictEntries = LanguageDictionaryService.parseEdict2Line(edictLine)
+        assertTrue(edictEntries.any { it.headword == "福音" && it.reading == "ふくいん" })
+        assertTrue(edictEntries.any { it.headword == "ふくいん" && it.definition.contains("gospel") })
+
+        val extracted = LanguageDictionaryService.extractWordAt("For God so loved the world.", 13)
+        assertEquals("loved", extracted)
+
+        val kjvCandidates = LanguageDictionaryService.buildWordCandidates("believeth", GospelLanguage.ENG)
+        assertTrue(kjvCandidates.contains("believe"), "Expected KJV stem 'believe' in $kjvCandidates")
+
+        val pluralCandidates = LanguageDictionaryService.buildWordCandidates("commandments", GospelLanguage.ENG)
+        assertTrue(pluralCandidates.contains("commandment"), "Expected stem 'commandment' in $pluralCandidates")
+    }
+
+    @Test
+    fun languageContentUriMappingAndHtmlParsing() {
+        assertEquals("/scriptures/dc-testament/dc/4", LanguageContentService.buildChurchOrgScriptureUri("dc", "sections", 4))
+        assertEquals("/scriptures/bofm/moro/10", LanguageContentService.buildChurchOrgScriptureUri("bofm", "moroni", 10))
+        assertEquals("/scriptures/bofm/1-ne/2", LanguageContentService.buildChurchOrgScriptureUri("bofm", "1-ne", 2))
+
+        val sampleChineseHtml = """
+            <header>
+              <h1>尼腓一書 第2章</h1>
+              <p class="subtitle">尼腓一書</p>
+            </header>
+            <div class="body-block">
+              <p class="verse"><span class="verse-number">1 </span>看啊，事情是這樣的，主對我父親說話<sup class="marker">甲</sup>。</p>
+              <p class="verse"><span class="verse-number">2 </span>事情是這樣的，主命令我父親在夢中帶家人離開。</p>
+            </div>
+        """.trimIndent()
+
+        val entity = LanguageContentService.parseScriptureChapterHtml(
+            langCode = "zho",
+            contentId = "scripture/bofm/1-ne/2",
+            htmlBody = sampleChineseHtml,
+            fallbackTitle = "尼腓一書 第2章",
+        )
+        assertNotNull(entity)
+        assertEquals("zho|scripture/bofm/1-ne/2", entity.cacheKey)
+        assertEquals("尼腓一書 第2章", entity.title)
+
+        // When meta title is blank, fall back to <h1> from HTML
+        val h1Fallback = LanguageContentService.parseScriptureChapterHtml(
+            langCode = "zho",
+            contentId = "scripture/bofm/1-ne/2",
+            htmlBody = sampleChineseHtml,
+            fallbackTitle = "",
+        )
+        assertNotNull(h1Fallback)
+        assertEquals("尼腓一書 第2章", h1Fallback.title)
+
+        val verses = LanguageContentService.decodeVerses(entity.versesEncoded)
+        assertEquals(2, verses.size)
+        assertEquals(1, verses[0].number)
+        assertEquals("看啊，事情是這樣的，主對我父親說話。", verses[0].text)
+        assertEquals(2, verses[1].number)
+
+        val roundTrip = LanguageContentService.decodeVerses(
+            LanguageContentService.encodeVerses(listOf(ContentVerse(1, "Test verse"), ContentVerse(null, "Paragraph")))
+        )
+        assertEquals(2, roundTrip.size)
+        assertEquals(1, roundTrip[0].number)
+        assertEquals(null, roundTrip[1].number)
     }
 }

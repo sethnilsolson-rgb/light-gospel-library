@@ -118,6 +118,7 @@ class HomeScreen(
                 GospelDatabase::class.java,
                 GospelRepository.DATABASE_NAME
             ) {
+                addMigrations(GospelDatabase.MIGRATION_2_3)
                 fallbackToDestructiveMigration()
             }
         },
@@ -151,8 +152,12 @@ class HomeScreen(
                         center = LightTopBarCenter.Text("Gospel Library"),
                         rightButton = LightBarButton.LightIcon(
                             icon = LightIcons.SETTINGS,
-                            contentDescription = "Toggle Theme",
-                            onClick = { LightThemeController.toggle() }
+                            contentDescription = "Settings",
+                            onClick = {
+                                navigateTo(screenFactory = { act ->
+                                    SettingsScreen(act)
+                                })
+                            }
                         ),
                         modifier = Modifier.padding(bottom = 0.5f.gridUnitsAsDp())
                     )

@@ -78,3 +78,71 @@ interface ConferenceTalkDao {
     @Query("DELETE FROM conference_talks WHERE periodId = '2024-10' OR talkId LIKE '%2024-10%'")
     suspend fun deleteOctober2024Talks()
 }
+
+@Dao
+interface LanguageDao {
+    @Query("SELECT * FROM downloaded_languages ORDER BY downloadedAt ASC")
+    fun getDownloadedLanguages(): Flow<List<DownloadedLanguageEntity>>
+
+    @Query("SELECT * FROM downloaded_languages ORDER BY downloadedAt ASC")
+    suspend fun getDownloadedLanguagesSync(): List<DownloadedLanguageEntity>
+
+    @Query("SELECT * FROM downloaded_languages WHERE langCode = :langCode LIMIT 1")
+    suspend fun getLanguageSync(langCode: String): DownloadedLanguageEntity?
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertLanguage(entity: DownloadedLanguageEntity)
+
+    @Query("UPDATE downloaded_languages SET isActive = (langCode = :langCode)")
+    suspend fun setActiveLanguage(langCode: String)
+
+    @Query("DELETE FROM downloaded_languages WHERE langCode = :langCode")
+    suspend fun deleteLanguage(langCode: String)
+
+    // Translated chapters cache
+    @Query("SELECT * FROM translated_chapters WHERE cacheKey = :cacheKey LIMIT 1")
+    suspend fun getTranslatedChapter(cacheKey: String): TranslatedChapterEntity?
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertTranslatedChapter(chapter: TranslatedChapterEntity)
+
+    @Query("SELECT COUNT(*) FROM translated_chapters WHERE langCode = :langCode")
+    suspend fun countTranslatedChapters(langCode: String): Int
+
+    @Query("DELETE FROM translated_chapters WHERE langCode = :langCode")
+    suspend fun deleteTranslatedChaptersForLanguage(langCode: String)
+
+    // Translated conference talks cache
+    @Query("SELECT * FROM translated_conference_talks WHERE langCode = :langCode ORDER BY year DESC, sessionOrder ASC, talkOrder ASC")
+    fun getTranslatedConferenceTalks(langCode: String): Flow<List<TranslatedConferenceTalkEntity>>
+
+    @Query("SELECT * FROM translated_conference_talks WHERE langCode = :langCode ORDER BY year DESC, sessionOrder ASC, talkOrder ASC")
+    suspend fun getTranslatedConferenceTalksSync(langCode: String): List<TranslatedConferenceTalkEntity>
+
+    @Query("SELECT * FROM translated_conference_talks WHERE compositeId = :compositeId LIMIT 1")
+    suspend fun getTranslatedConferenceTalk(compositeId: String): TranslatedConferenceTalkEntity?
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertTranslatedConferenceTalks(talks: List<TranslatedConferenceTalkEntity>)
+
+    @Query("DELETE FROM translated_conference_talks WHERE langCode = :langCode")
+    suspend fun deleteTranslatedConferenceTalksForLanguage(langCode: String)
+}
+
+@Dao
+interface LanguageDictionaryDao {
+    @Query("SELECT * FROM language_dict_entries WHERE dictKey = :dictKey AND headword = :headword LIMIT 5")
+    suspend fun lookupExact(dictKey: String, headword: String): List<LanguageDictEntryEntity>
+
+    @Query("SELECT COUNT(*) FROM language_dict_entries WHERE dictKey = :dictKey")
+    suspend fun countEntries(dictKey: String): Int
+
+    @Insert(onConflict = OnConflictStrategy.IGNORE)
+    suspend fun insertEntries(entries: List<LanguageDictEntryEntity>)
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertEntry(entry: LanguageDictEntryEntity)
+
+    @Query("DELETE FROM language_dict_entries WHERE dictKey = :dictKey")
+    suspend fun deleteDictionary(dictKey: String)
+}

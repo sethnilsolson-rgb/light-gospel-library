@@ -2,6 +2,7 @@ package com.thelightphone.gospellibrary.ui
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -10,18 +11,21 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewModelScope
 import com.thelightphone.gospellibrary.data.GeneralConferenceData
 import com.thelightphone.gospellibrary.data.GospelRepository
 import com.thelightphone.gospellibrary.db.GospelDatabase
 import com.thelightphone.gospellibrary.model.ConferencePeriod
+import com.thelightphone.gospellibrary.model.GospelLanguage
 import com.thelightphone.sdk.LightScreen
 import com.thelightphone.sdk.LightViewModel
 import com.thelightphone.sdk.SealedLightActivity
@@ -61,7 +65,14 @@ class ConferenceListViewModel(
     private val _syncMessage = MutableStateFlow<String?>(null)
     val syncMessage: StateFlow<String?> = _syncMessage.asStateFlow()
 
+    private val _availableLanguages = MutableStateFlow<List<GospelLanguage>>(listOf(GospelLanguage.ENG))
+    val availableLanguages: StateFlow<List<GospelLanguage>> = _availableLanguages.asStateFlow()
+
+    private val _currentLanguage = MutableStateFlow(GospelLanguage.ENG)
+    val currentLanguage: StateFlow<GospelLanguage> = _currentLanguage.asStateFlow()
+
     private var collectJob: Job? = null
+    private var languagesJob: Job? = null
     private var syncJob: Job? = null
 
     override fun onScreenShow(screen: SimpleLightScreen<Unit>) {
@@ -72,15 +83,49 @@ class ConferenceListViewModel(
             _selectedPeriodId.value = _periods.value.firstOrNull()?.id
         }
 
+        languagesJob?.cancel()
+        languagesJob = viewModelScope.launch {
+            repository.downloadedLanguages.collect { entities ->
+                val others = entities
+                    .filter { it.langCode != GospelLanguage.ENG.code }
+                    .map { GospelLanguage.fromCode(it.langCode) }
+                    .distinct()
+                    .sortedBy { GospelLanguage.entries.indexOf(it) }
+                _availableLanguages.value = listOf(GospelLanguage.ENG) + others
+            }
+        }
+
+        viewModelScope.launch {
+            val activeLang = GospelLanguage.fromCode(repository.getActiveLanguageCodeSync())
+            _currentLanguage.value = activeLang
+            refreshPeriodsForLanguage(activeLang)
+        }
+
         collectJob?.cancel()
         collectJob = viewModelScope.launch {
-            repository.conferenceTalks.collect { talks ->
-                val updated = GeneralConferenceData.getConferencePeriods(talks)
-                _periods.value = updated
-                if (_selectedPeriodId.value == null || updated.none { it.id == _selectedPeriodId.value }) {
-                    _selectedPeriodId.value = updated.firstOrNull()?.id
-                }
+            repository.conferenceTalks.collect {
+                refreshPeriodsForLanguage(_currentLanguage.value)
             }
+        }
+    }
+
+    private suspend fun refreshPeriodsForLanguage(language: GospelLanguage) {
+        val updated = repository.getConferencePeriods(language.code)
+        _periods.value = updated
+        if (_selectedPeriodId.value == null || updated.none { it.id == _selectedPeriodId.value }) {
+            _selectedPeriodId.value = updated.firstOrNull()?.id
+        }
+    }
+
+    fun cycleLanguage() {
+        val list = _availableLanguages.value
+        if (list.size <= 1) return
+        val currentIdx = list.indexOf(_currentLanguage.value).coerceAtLeast(0)
+        val nextLang = list[(currentIdx + 1) % list.size]
+        _currentLanguage.value = nextLang
+        viewModelScope.launch {
+            repository.setActiveLanguage(nextLang.code)
+            refreshPeriodsForLanguage(nextLang)
         }
     }
 
@@ -98,9 +143,7 @@ class ConferenceListViewModel(
                 val outcome = repository.syncConferenceIfOnline()
                 _syncMessage.value = outcome.message
                 if (outcome.downloadedNew) {
-                    val refreshed = repository.getConferencePeriods()
-                    _periods.value = refreshed
-                    _selectedPeriodId.value = refreshed.firstOrNull()?.id
+                    refreshPeriodsForLanguage(_currentLanguage.value)
                 }
             } catch (_: Throwable) {
                 _syncMessage.value = "Unable to check right now. Try again later."
@@ -121,6 +164,7 @@ class ConferenceListScreen(
                 GospelDatabase::class.java,
                 GospelRepository.DATABASE_NAME
             ) {
+                addMigrations(GospelDatabase.MIGRATION_2_3)
                 fallbackToDestructiveMigration()
             }
         },
@@ -141,8 +185,11 @@ class ConferenceListScreen(
         val selectedPeriodId by viewModel.selectedPeriodId.collectAsState()
         val isSyncing by viewModel.isSyncing.collectAsState()
         val syncMessage by viewModel.syncMessage.collectAsState()
+        val availableLanguages by viewModel.availableLanguages.collectAsState()
+        val currentLanguage by viewModel.currentLanguage.collectAsState()
 
         val conference = periods.firstOrNull { it.id == selectedPeriodId } ?: periods.firstOrNull()
+        val showLanguageToggle = availableLanguages.size > 1
 
         LightTheme(colors = themeColors) {
             Box(
@@ -152,14 +199,58 @@ class ConferenceListScreen(
                     .swipeToBack { goBack() }
             ) {
                 Column(modifier = Modifier.fillMaxSize()) {
-                    LightTopBar(
-                        leftButton = LightBarButton.LightIcon(
-                            icon = LightIcons.BACK,
-                            onClick = { goBack() }
-                        ),
-                        center = LightTopBarCenter.Text(conference?.name ?: "General Conference"),
-                        modifier = Modifier.padding(bottom = 0.5f.gridUnitsAsDp())
-                    )
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(bottom = 0.5f.gridUnitsAsDp())
+                    ) {
+                        LightTopBar(
+                            leftButton = LightBarButton.LightIcon(
+                                icon = LightIcons.BACK,
+                                onClick = { goBack() }
+                            ),
+                            center = if (showLanguageToggle) {
+                                null
+                            } else {
+                                LightTopBarCenter.Text(conference?.name ?: "General Conference")
+                            }
+                        )
+
+                        if (showLanguageToggle) {
+                            Row(
+                                modifier = Modifier
+                                    .align(Alignment.Center)
+                                    .padding(horizontal = 4.2f.gridUnitsAsDp()),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.Center,
+                            ) {
+                                LightText(
+                                    text = conference?.name ?: "General Conference",
+                                    variant = LightTextVariant.Fine,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier.weight(1f, fill = false)
+                                )
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Box(
+                                    modifier = Modifier
+                                        .border(
+                                            width = 1.dp,
+                                            color = LightThemeTokens.colors.content.copy(alpha = 0.85f),
+                                            shape = RoundedCornerShape(4.dp)
+                                        )
+                                        .lightClickable { viewModel.cycleLanguage() }
+                                        .padding(horizontal = 6.dp, vertical = 2.dp),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    LightText(
+                                        text = currentLanguage.shortBadge,
+                                        variant = LightTextVariant.Detail
+                                    )
+                                }
+                            }
+                        }
+                    }
 
                     LightScrollView(
                         modifier = Modifier
