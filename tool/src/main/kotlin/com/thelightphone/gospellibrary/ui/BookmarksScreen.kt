@@ -74,7 +74,7 @@ class BookmarksScreen(
                 GospelDatabase::class.java,
                 GospelRepository.DATABASE_NAME
             ) {
-                addMigrations(GospelDatabase.MIGRATION_2_3)
+                addMigrations(GospelDatabase.MIGRATION_2_3, GospelDatabase.MIGRATION_3_4)
                 fallbackToDestructiveMigration()
             }
         },
@@ -147,7 +147,7 @@ class BookmarksScreen(
                                         .padding(vertical = 12.dp)
                                         .lightClickable {
                                             navigateTo(screenFactory = { act ->
-                                                ReaderScreen(act, bookmark.contentId)
+                                                ReaderScreen(act, bookmark.contentId, bookmark.scrollPermille)
                                             })
                                         },
                                     verticalAlignment = Alignment.CenterVertically

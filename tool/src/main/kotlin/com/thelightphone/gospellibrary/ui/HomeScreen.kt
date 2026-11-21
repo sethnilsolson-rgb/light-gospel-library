@@ -118,7 +118,7 @@ class HomeScreen(
                 GospelDatabase::class.java,
                 GospelRepository.DATABASE_NAME
             ) {
-                addMigrations(GospelDatabase.MIGRATION_2_3)
+                addMigrations(GospelDatabase.MIGRATION_2_3, GospelDatabase.MIGRATION_3_4)
                 fallbackToDestructiveMigration()
             }
         },
@@ -178,7 +178,7 @@ class HomeScreen(
                                     .padding(vertical = 10.dp)
                                     .lightClickable {
                                         navigateTo(screenFactory = { act ->
-                                            ReaderScreen(act, recent.contentId)
+                                            ReaderScreen(act, recent.contentId, recent.scrollPermille)
                                         })
                                     }
                             ) {
@@ -192,9 +192,14 @@ class HomeScreen(
                                     text = recent.title,
                                     variant = LightTextVariant.Subheading
                                 )
-                                recent.subtitle?.let { sub ->
+                                val pctSuffix = if (recent.scrollPermille > 15) {
+                                    "${((recent.scrollPermille + 5) / 10).coerceIn(1, 100)}% in"
+                                } else null
+                                val subtitleLine = listOfNotNull(recent.subtitle?.takeIf { it.isNotBlank() }, pctSuffix)
+                                    .joinToString(" • ")
+                                if (subtitleLine.isNotBlank()) {
                                     LightText(
-                                        text = sub,
+                                        text = subtitleLine,
                                         variant = LightTextVariant.Detail,
                                         lighten = true,
                                         modifier = Modifier.padding(top = 2.dp)

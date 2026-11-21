@@ -16,7 +16,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         TranslatedConferenceTalkEntity::class,
         LanguageDictEntryEntity::class,
     ],
-    version = 3,
+    version = 4,
     exportSchema = false,
 )
 abstract class GospelDatabase : RoomDatabase() {
@@ -98,6 +98,13 @@ abstract class GospelDatabase : RoomDatabase() {
                     ON `language_dict_entries` (`dictKey`, `headword`)
                     """.trimIndent()
                 )
+            }
+        }
+
+        val MIGRATION_3_4 = object : Migration(3, 4) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE `bookmarks` ADD COLUMN `scrollPermille` INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE `last_read` ADD COLUMN `scrollPermille` INTEGER NOT NULL DEFAULT 0")
             }
         }
     }

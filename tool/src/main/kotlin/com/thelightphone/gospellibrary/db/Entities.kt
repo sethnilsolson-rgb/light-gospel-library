@@ -12,6 +12,7 @@ data class BookmarkEntity(
     val title: String,
     val snippet: String,
     val verseNumber: Int? = null,
+    val scrollPermille: Int = 0,
     val createdAt: Long = System.currentTimeMillis(),
 )
 
@@ -31,6 +32,7 @@ data class LastReadEntity(
     val contentId: String,
     val title: String,
     val subtitle: String?,
+    val scrollPermille: Int = 0,
     val updatedAt: Long = System.currentTimeMillis(),
 )
 

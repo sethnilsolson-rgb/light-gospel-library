@@ -55,6 +55,9 @@ class GospelRepository(
     fun isChapterBookmarked(contentId: String): Flow<Boolean> =
         database.bookmarkDao().isChapterBookmarked(contentId)
 
+    fun getBookmarksForContent(contentId: String): Flow<List<BookmarkEntity>> =
+        database.bookmarkDao().getBookmarksForContent(contentId)
+
     suspend fun toggleChapterBookmark(chapter: ContentChapter, isCurrentlyBookmarked: Boolean) {
         if (isCurrentlyBookmarked) {
             database.bookmarkDao().deleteChapterBookmark(chapter.id)
@@ -66,6 +69,39 @@ class GospelRepository(
                     title = chapter.title,
                     snippet = preview,
                     verseNumber = null,
+                    scrollPermille = 0,
+                )
+            )
+        }
+    }
+
+    suspend fun toggleScrollBookmark(
+        chapter: ContentChapter,
+        scrollPermille: Int,
+        visibleVerseNumber: Int?,
+        visibleSnippet: String?,
+        matchingBookmark: BookmarkEntity?,
+    ) {
+        if (matchingBookmark != null) {
+            database.bookmarkDao().deleteBookmark(matchingBookmark)
+        } else {
+            val clamped = scrollPermille.coerceIn(0, 1000)
+            val pct = ((clamped + 5) / 10).coerceIn(0, 100)
+            val title = when {
+                clamped > 15 && visibleVerseNumber != null -> "${chapter.title}:$visibleVerseNumber"
+                clamped > 15 -> "${chapter.title} • $pct% in"
+                else -> chapter.title
+            }
+            val snippet = visibleSnippet?.trim()?.take(90)?.ifBlank { null }
+                ?: chapter.verses.firstOrNull()?.text?.trim()?.take(90)
+                ?: ""
+            database.bookmarkDao().insertBookmark(
+                BookmarkEntity(
+                    contentId = chapter.id,
+                    title = title,
+                    snippet = snippet,
+                    verseNumber = if (clamped > 15) visibleVerseNumber else null,
+                    scrollPermille = clamped,
                 )
             )
         }
@@ -81,13 +117,21 @@ class GospelRepository(
         database.conferenceTalkDao().deleteOctober2024Talks()
     }
 
-    suspend fun recordLastRead(chapter: ContentChapter) {
+    suspend fun recordLastRead(chapter: ContentChapter, scrollPermille: Int = 0) {
         database.lastReadDao().saveLastRead(
             LastReadEntity(
                 contentId = chapter.id,
                 title = chapter.title,
                 subtitle = chapter.subtitle,
+                scrollPermille = scrollPermille.coerceIn(0, 1000),
             )
+        )
+    }
+
+    suspend fun updateLastReadScroll(contentId: String, scrollPermille: Int) {
+        database.lastReadDao().updateScrollPermille(
+            contentId = contentId,
+            scrollPermille = scrollPermille.coerceIn(0, 1000),
         )
     }
 

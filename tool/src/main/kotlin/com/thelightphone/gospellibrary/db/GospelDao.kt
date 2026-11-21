@@ -12,6 +12,9 @@ interface BookmarkDao {
     @Query("SELECT * FROM bookmarks ORDER BY createdAt DESC")
     fun getAllBookmarks(): Flow<List<BookmarkEntity>>
 
+    @Query("SELECT * FROM bookmarks WHERE contentId = :contentId ORDER BY createdAt DESC")
+    fun getBookmarksForContent(contentId: String): Flow<List<BookmarkEntity>>
+
     @Query("SELECT EXISTS(SELECT 1 FROM bookmarks WHERE contentId = :contentId AND verseNumber IS NULL)")
     fun isChapterBookmarked(contentId: String): Flow<Boolean>
 
@@ -56,6 +59,9 @@ interface LastReadDao {
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun saveLastRead(entity: LastReadEntity)
+
+    @Query("UPDATE last_read SET scrollPermille = :scrollPermille, updatedAt = :updatedAt WHERE recordId = 'singleton' AND contentId = :contentId")
+    suspend fun updateScrollPermille(contentId: String, scrollPermille: Int, updatedAt: Long = System.currentTimeMillis())
 }
 
 @Dao

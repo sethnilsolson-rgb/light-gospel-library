@@ -21,12 +21,16 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -36,6 +40,8 @@ import androidx.compose.ui.graphics.vector.PathNode
 import androidx.compose.ui.graphics.vector.rememberVectorPainter
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInParent
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.text.TextStyle
@@ -44,6 +50,7 @@ import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewModelScope
 import com.thelightphone.gospellibrary.data.GospelRepository
+import com.thelightphone.gospellibrary.db.BookmarkEntity
 import com.thelightphone.gospellibrary.db.GospelDatabase
 import com.thelightphone.gospellibrary.model.ContentChapter
 import com.thelightphone.gospellibrary.model.GospelLanguage
@@ -68,10 +75,17 @@ import com.thelightphone.sdk.ui.designVerticalPxToSp
 import com.thelightphone.sdk.ui.gridUnitsAsDp
 import com.thelightphone.sdk.ui.lightClickable
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
+import kotlin.math.abs
+
+private const val RECENT_SCROLL_TTL_MS = 180_000L // 3 minutes brief flip-back memory
+private const val BOOKMARK_PROXIMITY_PERMILLE = 55 // ~5.5% of page height
 
 private fun createBookmarkFilledVector(color: Color): ImageVector =
     ImageVector.Builder(
@@ -126,8 +140,14 @@ private fun createBookmarkOutlineVector(color: Color): ImageVector =
 
 class ReaderViewModel(
     private val initialContentId: String,
+    private val initialScrollPermille: Int?,
     private val repository: GospelRepository,
 ) : LightViewModel<Unit>() {
+
+    private data class RecentScrollEntry(
+        val permille: Int,
+        val savedAtMs: Long,
+    )
 
     private val _contentId = MutableStateFlow(initialContentId)
     val contentId: StateFlow<String> = _contentId.asStateFlow()
@@ -135,8 +155,11 @@ class ReaderViewModel(
     private val _chapter = MutableStateFlow<ContentChapter?>(null)
     val chapter: StateFlow<ContentChapter?> = _chapter.asStateFlow()
 
-    private val _isBookmarked = MutableStateFlow(false)
-    val isBookmarked: StateFlow<Boolean> = _isBookmarked.asStateFlow()
+    private val _chapterBookmarks = MutableStateFlow<List<BookmarkEntity>>(emptyList())
+    val chapterBookmarks: StateFlow<List<BookmarkEntity>> = _chapterBookmarks.asStateFlow()
+
+    private val _pendingScrollRestore = MutableStateFlow<Pair<Int, Int>?>(null)
+    val pendingScrollRestore: StateFlow<Pair<Int, Int>?> = _pendingScrollRestore.asStateFlow()
 
     private val _fontSize = MutableStateFlow(ReaderFontSize.REGULAR)
     val fontSize: StateFlow<ReaderFontSize> = _fontSize.asStateFlow()
@@ -162,10 +185,16 @@ class ReaderViewModel(
     private val _lookupResult = MutableStateFlow<WordLookupResult?>(null)
     val lookupResult: StateFlow<WordLookupResult?> = _lookupResult.asStateFlow()
 
+    private val recentScrollPositions = mutableMapOf<String, RecentScrollEntry>()
+    private var currentScrollPermille: Int = 0
+    private var restoreToken: Int = 0
+    private var hasInitialized = false
+
     private var bookmarkJob: Job? = null
     private var loadJob: Job? = null
     private var languagesJob: Job? = null
     private var lookupJob: Job? = null
+    private var scrollSaveJob: Job? = null
 
     override fun onScreenShow(screen: SimpleLightScreen<Unit>) {
         super.onScreenShow(screen)
@@ -185,19 +214,60 @@ class ReaderViewModel(
             }
         }
 
-        viewModelScope.launch {
-            val activeCode = repository.getActiveLanguageCodeSync()
-            val activeLang = GospelLanguage.fromCode(activeCode)
-            _currentLanguage.value = activeLang
-            _lookupEnabled.value = repository.isDictionaryReadyForLanguage(activeLang)
-            loadContent(_contentId.value, activeLang)
+        if (!hasInitialized) {
+            hasInitialized = true
+            viewModelScope.launch {
+                val activeCode = repository.getActiveLanguageCodeSync()
+                val activeLang = GospelLanguage.fromCode(activeCode)
+                _currentLanguage.value = activeLang
+                _lookupEnabled.value = repository.isDictionaryReadyForLanguage(activeLang)
+                loadContent(
+                    id = _contentId.value,
+                    language = activeLang,
+                    explicitScrollPermille = initialScrollPermille ?: 0,
+                    saveCurrentScroll = false,
+                )
+            }
         }
     }
 
-    fun loadContent(id: String, language: GospelLanguage = _currentLanguage.value) {
+    fun loadContent(
+        id: String,
+        language: GospelLanguage = _currentLanguage.value,
+        explicitScrollPermille: Int? = null,
+        saveCurrentScroll: Boolean = true,
+    ) {
+        val previousId = _contentId.value
+        val now = System.currentTimeMillis()
+
+        // Briefly remember where we were on the chapter we're leaving (for flip-back comparisons)
+        if (saveCurrentScroll && previousId != id && _chapter.value?.id == previousId) {
+            recentScrollPositions[previousId] = RecentScrollEntry(
+                permille = currentScrollPermille.coerceIn(0, 1000),
+                savedAtMs = now,
+            )
+            recentScrollPositions.entries.removeAll { (_, entry) ->
+                now - entry.savedAtMs > RECENT_SCROLL_TTL_MS
+            }
+        }
+
+        val targetPermille = when {
+            explicitScrollPermille != null -> explicitScrollPermille.coerceIn(0, 1000)
+            previousId != id -> {
+                val recent = recentScrollPositions[id]
+                if (recent != null && now - recent.savedAtMs <= RECENT_SCROLL_TTL_MS) {
+                    recent.permille
+                } else {
+                    0 // New chapter always starts cleanly at the top
+                }
+            }
+            else -> currentScrollPermille.coerceIn(0, 1000)
+        }
+
         _contentId.value = id
         _languageNotice.value = null
         dismissLookup()
+        scrollSaveJob?.cancel()
 
         loadJob?.cancel()
         loadJob = viewModelScope.launch {
@@ -208,27 +278,51 @@ class ReaderViewModel(
             val loaded = repository.getContentInLanguage(id, language.code)
             _isLoadingLanguage.value = false
 
-            if (loaded != null) {
-                _chapter.value = loaded
+            val resolvedChapter = if (loaded != null) {
                 _lookupEnabled.value = repository.isDictionaryReadyForLanguage(language)
-                repository.recordLastRead(loaded)
+                loaded
             } else if (isNonEnglish) {
                 // Gracefully fall back to built-in English while offline if chapter isn't cached yet
-                val englishFallback = repository.getContentInLanguage(id, GospelLanguage.ENG.code)
-                _chapter.value = englishFallback
                 _lookupEnabled.value = repository.isDictionaryReadyForLanguage(GospelLanguage.ENG)
                 _languageNotice.value =
                     "${language.nativeName} chapter isn't cached offline yet. Connect to internet once or pre-download in Settings."
+                repository.getContentInLanguage(id, GospelLanguage.ENG.code)
             } else {
-                _chapter.value = null
+                null
+            }
+
+            currentScrollPermille = targetPermille
+            _pendingScrollRestore.value = (++restoreToken) to targetPermille
+            _chapter.value = resolvedChapter
+
+            if (resolvedChapter != null) {
+                repository.recordLastRead(resolvedChapter, targetPermille)
             }
 
             bookmarkJob?.cancel()
             bookmarkJob = viewModelScope.launch {
-                repository.isChapterBookmarked(id).collect { bookmarked ->
-                    _isBookmarked.value = bookmarked
+                repository.getBookmarksForContent(id).collect { list ->
+                    _chapterBookmarks.value = list
                 }
             }
+        }
+    }
+
+    fun consumePendingScrollRestore() {
+        _pendingScrollRestore.value = null
+    }
+
+    fun onScrollPositionChanged(renderedChapterId: String, scrollPermille: Int) {
+        if (_pendingScrollRestore.value != null) return
+        if (_chapter.value?.id != renderedChapterId) return
+
+        val clamped = scrollPermille.coerceIn(0, 1000)
+        currentScrollPermille = clamped
+
+        scrollSaveJob?.cancel()
+        scrollSaveJob = viewModelScope.launch {
+            delay(400L)
+            repository.updateLastReadScroll(renderedChapterId, clamped)
         }
     }
 
@@ -238,11 +332,17 @@ class ReaderViewModel(
         val currentIdx = list.indexOf(_currentLanguage.value).coerceAtLeast(0)
         val nextLang = list[(currentIdx + 1) % list.size]
         _currentLanguage.value = nextLang
+        val keepPermille = currentScrollPermille
         viewModelScope.launch {
             repository.setActiveLanguage(nextLang.code)
             _lookupEnabled.value = repository.isDictionaryReadyForLanguage(nextLang)
         }
-        loadContent(_contentId.value, nextLang)
+        loadContent(
+            id = _contentId.value,
+            language = nextLang,
+            explicitScrollPermille = keepPermille,
+            saveCurrentScroll = false,
+        )
     }
 
     fun lookupWordAt(text: String, charIndex: Int, verseNumber: Int?) {
@@ -272,14 +372,31 @@ class ReaderViewModel(
         _lookupResult.value = null
     }
 
-    fun toggleBookmark() {
+    fun toggleBookmark(
+        scrollPermille: Int,
+        visibleVerseNumber: Int?,
+        visibleSnippet: String?,
+    ) {
         val current = _chapter.value ?: return
+        val clamped = scrollPermille.coerceIn(0, 1000)
+        val matching = _chapterBookmarks.value
+            .filter { abs(it.scrollPermille - clamped) <= BOOKMARK_PROXIMITY_PERMILLE }
+            .minByOrNull { abs(it.scrollPermille - clamped) }
+
         viewModelScope.launch {
-            repository.toggleChapterBookmark(current, _isBookmarked.value)
+            repository.toggleScrollBookmark(
+                chapter = current,
+                scrollPermille = clamped,
+                visibleVerseNumber = visibleVerseNumber,
+                visibleSnippet = visibleSnippet,
+                matchingBookmark = matching,
+            )
         }
     }
 
-    fun cycleFontSize() {
+    fun cycleFontSize(preservePermille: Int) {
+        currentScrollPermille = preservePermille.coerceIn(0, 1000)
+        _pendingScrollRestore.value = (++restoreToken) to currentScrollPermille
         _fontSize.value = when (_fontSize.value) {
             ReaderFontSize.COMPACT -> ReaderFontSize.REGULAR
             ReaderFontSize.REGULAR -> ReaderFontSize.LARGE
@@ -291,6 +408,7 @@ class ReaderViewModel(
 class ReaderScreen(
     sealedActivity: SealedLightActivity,
     private val contentId: String,
+    private val initialScrollPermille: Int? = null,
 ) : LightScreen<Unit, ReaderViewModel>(sealedActivity) {
 
     private val repository = GospelRepository.getInstance(
@@ -299,7 +417,7 @@ class ReaderScreen(
                 GospelDatabase::class.java,
                 GospelRepository.DATABASE_NAME
             ) {
-                addMigrations(GospelDatabase.MIGRATION_2_3)
+                addMigrations(GospelDatabase.MIGRATION_2_3, GospelDatabase.MIGRATION_3_4)
                 fallbackToDestructiveMigration()
             }
         },
@@ -311,13 +429,14 @@ class ReaderScreen(
     override val viewModelClass: Class<ReaderViewModel>
         get() = ReaderViewModel::class.java
 
-    override fun createViewModel() = ReaderViewModel(contentId, repository)
+    override fun createViewModel() = ReaderViewModel(contentId, initialScrollPermille, repository)
 
     @Composable
     override fun Content() {
         val themeColors by LightThemeController.colors.collectAsState()
         val chapter by viewModel.chapter.collectAsState()
-        val isBookmarked by viewModel.isBookmarked.collectAsState()
+        val chapterBookmarks by viewModel.chapterBookmarks.collectAsState()
+        val pendingScrollRestore by viewModel.pendingScrollRestore.collectAsState()
         val fontSize by viewModel.fontSize.collectAsState()
         val availableLanguages by viewModel.availableLanguages.collectAsState()
         val currentLanguage by viewModel.currentLanguage.collectAsState()
@@ -331,6 +450,68 @@ class ReaderScreen(
             ReaderFontSize.COMPACT -> LightTextVariant.Detail
             ReaderFontSize.REGULAR -> LightTextVariant.Paragraph
             ReaderFontSize.LARGE -> LightTextVariant.Copy
+        }
+
+        val scrollState = rememberScrollState()
+        val verseOffsets = remember(chapter?.id, chapter?.langCode, fontSize) { mutableMapOf<Int, Int>() }
+
+        fun readCurrentPermille(): Int {
+            val maxVal = scrollState.maxValue
+            return if (maxVal > 0) {
+                ((scrollState.value.toLong() * 1000L) / maxVal.toLong()).toInt().coerceIn(0, 1000)
+            } else {
+                0
+            }
+        }
+
+        val isBookmarked by remember(scrollState, chapterBookmarks) {
+            derivedStateOf {
+                val permille = readCurrentPermille()
+                chapterBookmarks.any {
+                    abs(it.scrollPermille - permille) <= BOOKMARK_PROXIMITY_PERMILLE
+                }
+            }
+        }
+
+        // Restore target scroll position (0 for new chapters, saved position for bookmarks/flip-backs/language/font changes)
+        LaunchedEffect(pendingScrollRestore, chapter?.id, chapter?.langCode, fontSize) {
+            val pending = pendingScrollRestore ?: return@LaunchedEffect
+            if (chapter == null) return@LaunchedEffect
+            val (_, targetPermille) = pending
+            if (targetPermille <= 0) {
+                scrollState.scrollTo(0)
+                withFrameNanos { }
+                if (scrollState.value != 0) {
+                    scrollState.scrollTo(0)
+                }
+            } else {
+                // Wait one frame so Compose measures the new chapter/font size before computing pixel offset
+                withFrameNanos { }
+                val maxVal = withTimeoutOrNull(800L) {
+                    snapshotFlow { scrollState.maxValue }.first { it > 0 }
+                } ?: scrollState.maxValue
+                val targetPx = if (maxVal > 0) {
+                    ((targetPermille.toLong() * maxVal.toLong()) / 1000L).toInt().coerceIn(0, maxVal)
+                } else {
+                    0
+                }
+                scrollState.scrollTo(targetPx)
+            }
+            viewModel.consumePendingScrollRestore()
+        }
+
+        // Track scroll position for Continue Reading and brief flip-back memory
+        LaunchedEffect(scrollState, chapter?.id) {
+            val renderedChapterId = chapter?.id ?: return@LaunchedEffect
+            snapshotFlow { scrollState.value to scrollState.maxValue }
+                .collect { (value, maxVal) ->
+                    val permille = if (maxVal > 0) {
+                        ((value.toLong() * 1000L) / maxVal.toLong()).toInt().coerceIn(0, 1000)
+                    } else {
+                        0
+                    }
+                    viewModel.onScrollPositionChanged(renderedChapterId, permille)
+                }
         }
 
         val contentColor = LightThemeTokens.colors.content
@@ -402,7 +583,23 @@ class ReaderScreen(
                             rightButton = LightBarButton.Icon(
                                 painter = bookmarkPainter,
                                 contentDescription = if (isBookmarked) "Bookmarked" else "Bookmark",
-                                onClick = { viewModel.toggleBookmark() }
+                                onClick = {
+                                    val currentChapter = chapter ?: return@Icon
+                                    val visibleIdx = verseOffsets.entries
+                                        .filter { it.value <= scrollState.value + 60 }
+                                        .maxByOrNull { it.value }
+                                        ?.key
+                                        ?: verseOffsets.entries
+                                            .minByOrNull { abs(it.value - scrollState.value) }
+                                            ?.key
+                                        ?: 0
+                                    val visibleVerse = currentChapter.verses.getOrNull(visibleIdx)
+                                    viewModel.toggleBookmark(
+                                        scrollPermille = readCurrentPermille(),
+                                        visibleVerseNumber = visibleVerse?.number,
+                                        visibleSnippet = visibleVerse?.text,
+                                    )
+                                }
                             ),
                         )
 
@@ -474,7 +671,7 @@ class ReaderScreen(
                             lighten = true,
                             modifier = Modifier
                                 .padding(start = 12.dp)
-                                .lightClickable { viewModel.cycleFontSize() }
+                                .lightClickable { viewModel.cycleFontSize(readCurrentPermille()) }
                         )
                     }
 
@@ -522,16 +719,20 @@ class ReaderScreen(
                             }
                         } else {
                             LightScrollView(
+                                scrollState = scrollState,
                                 modifier = Modifier
                                     .fillMaxSize()
                                     .padding(start = 1.5f.gridUnitsAsDp())
                             ) {
                                 Spacer(modifier = Modifier.height(12.dp))
 
-                                currentChapter.verses.forEach { verse ->
+                                currentChapter.verses.forEachIndexed { idx, verse ->
                                     Row(
                                         modifier = Modifier
                                             .fillMaxWidth()
+                                            .onGloballyPositioned { coords ->
+                                                verseOffsets[idx] = coords.positionInParent().y.toInt()
+                                            }
                                             .padding(end = 1.5f.gridUnitsAsDp(), top = 6.dp, bottom = 8.dp),
                                         verticalAlignment = Alignment.Top
                                     ) {
