@@ -147,8 +147,17 @@ class HomeScreen(
                     .background(LightThemeTokens.colors.background)
             ) {
                 Column(modifier = Modifier.fillMaxSize()) {
-                    // Minimal Top Bar
+                    // Minimal Top Bar with Search (left) & Settings (right)
                     LightTopBar(
+                        leftButton = LightBarButton.LightIcon(
+                            icon = LightIcons.SEARCH,
+                            contentDescription = "Search",
+                            onClick = {
+                                navigateTo(screenFactory = { act ->
+                                    SearchScreen(act)
+                                })
+                            }
+                        ),
                         center = LightTopBarCenter.Text("Gospel Library"),
                         rightButton = LightBarButton.LightIcon(
                             icon = LightIcons.SETTINGS,

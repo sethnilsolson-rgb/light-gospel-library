@@ -567,6 +567,28 @@ class GospelRepository(
         }
     }
 
+    suspend fun searchGospel(
+        query: String,
+        scope: SearchScope = SearchScope.ALL,
+        isCancelled: () -> Boolean = { false },
+    ): GospelSearchResponse = withContext(Dispatchers.IO) {
+        ensureConferenceAssetLoaded()
+        val dbTalks = database.conferenceTalkDao().getAllTalksSync()
+        val mergedById = LinkedHashMap<String, ConferenceTalkEntity>()
+        GeneralConferenceData.getBundledTalkEntities().forEach { mergedById[it.talkId] = it }
+        dbTalks
+            .filter { it.periodId >= "2026-10" && !it.talkId.contains("2024-10") }
+            .forEach { mergedById[it.talkId] = it }
+
+        GospelSearchEngine.search(
+            rawQuery = query,
+            scope = scope,
+            assetStreamProvider = assetStreamProvider,
+            conferenceTalks = mergedById.values.toList(),
+            isCancelled = isCancelled,
+        )
+    }
+
     // endregion
 
     companion object {
