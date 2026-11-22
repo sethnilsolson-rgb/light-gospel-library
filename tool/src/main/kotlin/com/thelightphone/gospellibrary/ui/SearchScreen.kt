@@ -230,7 +230,11 @@ class SearchScreen(
                         modifier = Modifier.fillMaxSize()
                     )
                 } else {
-                    Column(modifier = Modifier.fillMaxSize()) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .swipeToBack { goBack() }
+                    ) {
                         LightTopBar(
                             leftButton = LightBarButton.LightIcon(
                                 icon = LightIcons.BACK,
