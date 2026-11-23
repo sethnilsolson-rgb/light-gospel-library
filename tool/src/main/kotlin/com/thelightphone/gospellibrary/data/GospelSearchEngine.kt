@@ -6,6 +6,7 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import java.io.InputStream
 import java.util.Locale
+import java.util.zip.GZIPInputStream
 import kotlin.math.max
 import kotlin.math.min
 
@@ -912,7 +913,7 @@ object GospelSearchEngine {
         val assetPath = when (volumeId) {
             "bofm" -> "scriptures/book-of-mormon.json"
             "nt" -> "scriptures/new-testament.json"
-            "ot" -> "scriptures/old-testament.json"
+            "ot" -> "scriptures/old-testament.bin"
             "dc" -> "scriptures/doctrine-and-covenants.json"
             "pgp" -> "scriptures/pearl-of-great-price.json"
             else -> return
@@ -920,13 +921,14 @@ object GospelSearchEngine {
         val volumeTitle = StandardWorksData.findVolume(volumeId)?.shortTitle ?: volumeId
         val booksInVol = StandardWorksData.getBooksForVolume(volumeId)
 
-        val stream = try {
+        val rawStream = try {
             assetStreamProvider(assetPath)
         } catch (_: Exception) {
             null
         } ?: return
 
         try {
+            val stream = if (assetPath.endsWith(".bin")) GZIPInputStream(rawStream) else rawStream
             val rawJson = stream.bufferedReader(Charsets.UTF_8).use { it.readText() }
             if (isCancelled()) return
             val parsed = scriptureJson.decodeFromString<SearchJsonVolume>(rawJson)

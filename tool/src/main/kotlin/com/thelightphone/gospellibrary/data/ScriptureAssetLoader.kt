@@ -4,6 +4,7 @@ import android.util.JsonReader
 import com.thelightphone.gospellibrary.model.ContentVerse
 import java.io.InputStream
 import java.io.InputStreamReader
+import java.util.zip.GZIPInputStream
 
 object ScriptureAssetLoader {
 
@@ -18,19 +19,20 @@ object ScriptureAssetLoader {
         val assetPath = when (volumeId) {
             "bofm" -> "scriptures/book-of-mormon.json"
             "nt" -> "scriptures/new-testament.json"
-            "ot" -> "scriptures/old-testament.json"
+            "ot" -> "scriptures/old-testament.bin"
             "dc" -> "scriptures/doctrine-and-covenants.json"
             "pgp" -> "scriptures/pearl-of-great-price.json"
             else -> return emptyList()
         }
 
-        val stream = try {
+        val rawStream = try {
             assetStreamProvider(assetPath)
         } catch (_: Exception) {
             null
         } ?: return emptyList()
 
         return try {
+            val stream = if (assetPath.endsWith(".bin")) GZIPInputStream(rawStream) else rawStream
             stream.use { inputStream ->
                 JsonReader(InputStreamReader(inputStream, Charsets.UTF_8)).use { reader ->
                     if (volumeId == "dc") {
