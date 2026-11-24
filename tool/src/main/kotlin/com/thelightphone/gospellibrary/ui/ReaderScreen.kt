@@ -26,6 +26,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -41,11 +42,15 @@ import androidx.compose.ui.graphics.vector.rememberVectorPainter
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.layout.positionInParent
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewModelScope
@@ -55,6 +60,7 @@ import com.thelightphone.gospellibrary.db.GospelDatabase
 import com.thelightphone.gospellibrary.model.ContentChapter
 import com.thelightphone.gospellibrary.model.GospelLanguage
 import com.thelightphone.gospellibrary.model.ReaderFontSize
+import com.thelightphone.gospellibrary.model.ReaderPageMode
 import com.thelightphone.gospellibrary.model.WordLookupResult
 import com.thelightphone.sdk.LightScreen
 import com.thelightphone.sdk.LightViewModel
@@ -161,8 +167,11 @@ class ReaderViewModel(
     private val _pendingScrollRestore = MutableStateFlow<Pair<Int, Int>?>(null)
     val pendingScrollRestore: StateFlow<Pair<Int, Int>?> = _pendingScrollRestore.asStateFlow()
 
-    private val _fontSize = MutableStateFlow(ReaderFontSize.REGULAR)
-    val fontSize: StateFlow<ReaderFontSize> = _fontSize.asStateFlow()
+    val fontSize: StateFlow<ReaderFontSize> = repository.fontSize
+    val pageMode: StateFlow<ReaderPageMode> = repository.pageMode
+
+    private val _isFullScreen = MutableStateFlow(false)
+    val isFullScreen: StateFlow<Boolean> = _isFullScreen.asStateFlow()
 
     private val _availableLanguages = MutableStateFlow<List<GospelLanguage>>(listOf(GospelLanguage.ENG))
     val availableLanguages: StateFlow<List<GospelLanguage>> = _availableLanguages.asStateFlow()
@@ -397,11 +406,22 @@ class ReaderViewModel(
     fun cycleFontSize(preservePermille: Int) {
         currentScrollPermille = preservePermille.coerceIn(0, 1000)
         _pendingScrollRestore.value = (++restoreToken) to currentScrollPermille
-        _fontSize.value = when (_fontSize.value) {
+        val next = when (fontSize.value) {
             ReaderFontSize.COMPACT -> ReaderFontSize.REGULAR
             ReaderFontSize.REGULAR -> ReaderFontSize.LARGE
             ReaderFontSize.LARGE -> ReaderFontSize.COMPACT
         }
+        repository.setFontSize(next)
+    }
+
+    fun togglePageMode(preservePermille: Int) {
+        currentScrollPermille = preservePermille.coerceIn(0, 1000)
+        _pendingScrollRestore.value = (++restoreToken) to currentScrollPermille
+        repository.setPageMode(pageMode.value.toggle())
+    }
+
+    fun toggleFullScreen() {
+        _isFullScreen.value = !_isFullScreen.value
     }
 }
 
@@ -423,7 +443,8 @@ class ReaderScreen(
         },
         assetStreamProvider = { path ->
             lightContext.readAsset(path).inputStream()
-        }
+        },
+        filesDir = lightContext.filesDir,
     )
 
     override val viewModelClass: Class<ReaderViewModel>
@@ -438,6 +459,8 @@ class ReaderScreen(
         val chapterBookmarks by viewModel.chapterBookmarks.collectAsState()
         val pendingScrollRestore by viewModel.pendingScrollRestore.collectAsState()
         val fontSize by viewModel.fontSize.collectAsState()
+        val pageMode by viewModel.pageMode.collectAsState()
+        val isFullScreen by viewModel.isFullScreen.collectAsState()
         val availableLanguages by viewModel.availableLanguages.collectAsState()
         val currentLanguage by viewModel.currentLanguage.collectAsState()
         val isLoadingLanguage by viewModel.isLoadingLanguage.collectAsState()
@@ -452,19 +475,73 @@ class ReaderScreen(
             ReaderFontSize.LARGE -> LightTextVariant.Copy
         }
 
+        val density = LocalDensity.current
+        val textMeasurer = rememberTextMeasurer()
+        val bodyStyle = readerScaledTextStyle(textVariant)
         val scrollState = rememberScrollState()
         val verseOffsets = remember(chapter?.id, chapter?.langCode, fontSize) { mutableMapOf<Int, Int>() }
 
-        fun readCurrentPermille(): Int {
-            val maxVal = scrollState.maxValue
-            return if (maxVal > 0) {
-                ((scrollState.value.toLong() * 1000L) / maxVal.toLong()).toInt().coerceIn(0, 1000)
+        // Paged mode viewport measurement & pagination
+        var pagedViewportSize by remember { mutableStateOf(IntSize.Zero) }
+        var currentPageIdx by remember(chapter?.id, chapter?.langCode) { mutableIntStateOf(0) }
+        var pagedAnchorPermille by remember(chapter?.id, chapter?.langCode) { mutableIntStateOf(0) }
+
+        val sidePadDp = 1.5f.gridUnitsAsDp()
+        val sidePadPx = with(density) { sidePadDp.roundToPx() }
+        val pagedVerticalPadPx = with(density) { (if (isFullScreen) 32.dp else 16.dp).roundToPx() }
+
+        val pages = remember(
+            pageMode,
+            chapter?.id,
+            chapter?.langCode,
+            chapter?.verses,
+            bodyStyle,
+            pagedViewportSize,
+            isFullScreen,
+        ) {
+            val ch = chapter
+            if (pageMode != ReaderPageMode.PAGED || ch == null || pagedViewportSize.width <= 0 || pagedViewportSize.height <= 0) {
+                emptyList()
             } else {
-                0
+                GospelReaderPaginator.paginateVerses(
+                    verses = ch.verses,
+                    textMeasurer = textMeasurer,
+                    bodyStyle = bodyStyle,
+                    viewportWidthPx = (pagedViewportSize.width - sidePadPx * 2).coerceAtLeast(100),
+                    viewportHeightPx = (pagedViewportSize.height - pagedVerticalPadPx).coerceAtLeast(100),
+                    density = density,
+                )
             }
         }
 
-        val isBookmarked by remember(scrollState, chapterBookmarks) {
+        // Keep paged reading position anchored when pages recalculate (e.g. Full Screen / font size toggle)
+        LaunchedEffect(pages) {
+            if (pageMode == ReaderPageMode.PAGED && pages.isNotEmpty()) {
+                val pending = pendingScrollRestore
+                val target = pending?.second ?: pagedAnchorPermille
+                val mapped = GospelReaderPaginator.pageIndexForPermille(pages, target)
+                currentPageIdx = mapped.coerceIn(0, pages.lastIndex)
+                pagedAnchorPermille = pages[currentPageIdx].permilleStart
+                if (pending != null) {
+                    viewModel.consumePendingScrollRestore()
+                }
+            }
+        }
+
+        fun readCurrentPermille(): Int {
+            return if (pageMode == ReaderPageMode.PAGED) {
+                pages.getOrNull(currentPageIdx)?.permilleStart ?: pagedAnchorPermille
+            } else {
+                val maxVal = scrollState.maxValue
+                if (maxVal > 0) {
+                    ((scrollState.value.toLong() * 1000L) / maxVal.toLong()).toInt().coerceIn(0, 1000)
+                } else {
+                    0
+                }
+            }
+        }
+
+        val isBookmarked by remember(scrollState, chapterBookmarks, pageMode, currentPageIdx, pages) {
             derivedStateOf {
                 val permille = readCurrentPermille()
                 chapterBookmarks.any {
@@ -473,35 +550,45 @@ class ReaderScreen(
             }
         }
 
-        // Restore target scroll position (0 for new chapters, saved position for bookmarks/flip-backs/language/font changes)
-        LaunchedEffect(pendingScrollRestore, chapter?.id, chapter?.langCode, fontSize) {
+        // Restore target scroll / page position (0 for new chapters, saved permille for bookmarks/flip-backs/mode/font changes)
+        LaunchedEffect(pendingScrollRestore, chapter?.id, chapter?.langCode, fontSize, pageMode, pages.size) {
             val pending = pendingScrollRestore ?: return@LaunchedEffect
             if (chapter == null) return@LaunchedEffect
             val (_, targetPermille) = pending
-            if (targetPermille <= 0) {
-                scrollState.scrollTo(0)
-                withFrameNanos { }
-                if (scrollState.value != 0) {
-                    scrollState.scrollTo(0)
+            if (pageMode == ReaderPageMode.PAGED) {
+                pagedAnchorPermille = targetPermille
+                if (pages.isNotEmpty()) {
+                    val mapped = GospelReaderPaginator.pageIndexForPermille(pages, targetPermille)
+                    currentPageIdx = mapped.coerceIn(0, pages.lastIndex)
+                    pagedAnchorPermille = pages[currentPageIdx].permilleStart
+                    viewModel.consumePendingScrollRestore()
                 }
             } else {
-                // Wait one frame so Compose measures the new chapter/font size before computing pixel offset
-                withFrameNanos { }
-                val maxVal = withTimeoutOrNull(800L) {
-                    snapshotFlow { scrollState.maxValue }.first { it > 0 }
-                } ?: scrollState.maxValue
-                val targetPx = if (maxVal > 0) {
-                    ((targetPermille.toLong() * maxVal.toLong()) / 1000L).toInt().coerceIn(0, maxVal)
+                if (targetPermille <= 0) {
+                    scrollState.scrollTo(0)
+                    withFrameNanos { }
+                    if (scrollState.value != 0) {
+                        scrollState.scrollTo(0)
+                    }
                 } else {
-                    0
+                    withFrameNanos { }
+                    val maxVal = withTimeoutOrNull(800L) {
+                        snapshotFlow { scrollState.maxValue }.first { it > 0 }
+                    } ?: scrollState.maxValue
+                    val targetPx = if (maxVal > 0) {
+                        ((targetPermille.toLong() * maxVal.toLong()) / 1000L).toInt().coerceIn(0, maxVal)
+                    } else {
+                        0
+                    }
+                    scrollState.scrollTo(targetPx)
                 }
-                scrollState.scrollTo(targetPx)
+                viewModel.consumePendingScrollRestore()
             }
-            viewModel.consumePendingScrollRestore()
         }
 
-        // Track scroll position for Continue Reading and brief flip-back memory
-        LaunchedEffect(scrollState, chapter?.id) {
+        // Track scroll position for Continue Reading and brief flip-back memory (Scroll mode)
+        LaunchedEffect(scrollState, chapter?.id, pageMode) {
+            if (pageMode != ReaderPageMode.SCROLL) return@LaunchedEffect
             val renderedChapterId = chapter?.id ?: return@LaunchedEffect
             snapshotFlow { scrollState.value to scrollState.maxValue }
                 .collect { (value, maxVal) ->
@@ -512,6 +599,36 @@ class ReaderScreen(
                     }
                     viewModel.onScrollPositionChanged(renderedChapterId, permille)
                 }
+        }
+
+        // Track page position for Continue Reading and flip-back memory (Paged mode)
+        LaunchedEffect(currentPageIdx, pages, chapter?.id, pageMode) {
+            if (pageMode != ReaderPageMode.PAGED) return@LaunchedEffect
+            val renderedChapterId = chapter?.id ?: return@LaunchedEffect
+            val page = pages.getOrNull(currentPageIdx) ?: return@LaunchedEffect
+            pagedAnchorPermille = page.permilleStart
+            viewModel.onScrollPositionChanged(renderedChapterId, page.permilleStart)
+        }
+
+        fun goNextPageOrChapter() {
+            val ch = chapter ?: return
+            if (pageMode == ReaderPageMode.PAGED && pages.isNotEmpty() && currentPageIdx < pages.lastIndex) {
+                currentPageIdx += 1
+            } else {
+                ch.nextId?.let { viewModel.loadContent(it, explicitScrollPermille = 0) }
+            }
+        }
+
+        fun goPrevPageOrChapter() {
+            val ch = chapter ?: return
+            if (pageMode == ReaderPageMode.PAGED && pages.isNotEmpty() && currentPageIdx > 0) {
+                currentPageIdx -= 1
+            } else if (ch.prevId != null) {
+                val target = if (pageMode == ReaderPageMode.PAGED) 1000 else null
+                viewModel.loadContent(ch.prevId, explicitScrollPermille = target)
+            } else {
+                goBack()
+            }
         }
 
         val contentColor = LightThemeTokens.colors.content
@@ -526,8 +643,9 @@ class ReaderScreen(
         )
 
         val haptics = LocalHapticFeedback.current
-        var horizontalDragAccumulator by remember(chapter?.id) { mutableFloatStateOf(0f) }
-        var dragStartX by remember(chapter?.id) { mutableFloatStateOf(0f) }
+        val farLeftEdgePx = with(density) { 44.dp.toPx() }
+        var horizontalDragAccumulator by remember(chapter?.id, pageMode) { mutableFloatStateOf(0f) }
+        var dragStartX by remember(chapter?.id, pageMode) { mutableFloatStateOf(0f) }
         val showLanguageToggle = availableLanguages.size > 1
         val isOverlayOpen = isLookingUp || lookupResult != null
 
@@ -536,7 +654,7 @@ class ReaderScreen(
                 modifier = Modifier
                     .fillMaxSize()
                     .background(LightThemeTokens.colors.background)
-                    .pointerInput(chapter?.id, isOverlayOpen) {
+                    .pointerInput(chapter?.id, isOverlayOpen, pageMode, pages.size, currentPageIdx) {
                         if (isOverlayOpen) return@pointerInput
                         detectHorizontalDragGestures(
                             onDragStart = { offset ->
@@ -545,14 +663,14 @@ class ReaderScreen(
                             },
                             onDragEnd = {
                                 if (horizontalDragAccumulator > 70f) {
-                                    // Fast swipe from the side (or if no previous chapter) navigates back
-                                    if (dragStartX <= 300f || chapter?.prevId == null) {
+                                    // Swipe from the far left edge always goes back (even in Full Screen / Pages)
+                                    if (dragStartX <= farLeftEdgePx) {
                                         goBack()
                                     } else {
-                                        chapter?.prevId?.let { viewModel.loadContent(it) }
+                                        goPrevPageOrChapter()
                                     }
-                                } else if (horizontalDragAccumulator < -80f) {
-                                    chapter?.nextId?.let { viewModel.loadContent(it) }
+                                } else if (horizontalDragAccumulator < -75f) {
+                                    goNextPageOrChapter()
                                 }
                                 horizontalDragAccumulator = 0f
                             },
@@ -564,147 +682,183 @@ class ReaderScreen(
                     }
             ) {
                 Column(modifier = Modifier.fillMaxSize()) {
-                    // Top Bar with optional seamless Language Toggle right up by the title ("1 Nephi 2")
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(bottom = 0.5f.gridUnitsAsDp())
-                    ) {
-                        LightTopBar(
-                            leftButton = LightBarButton.LightIcon(
-                                icon = LightIcons.BACK,
-                                onClick = { goBack() }
-                            ),
-                            center = if (showLanguageToggle) {
-                                null
-                            } else {
-                                LightTopBarCenter.Text(text = chapter?.title ?: "Reader")
-                            },
-                            rightButton = LightBarButton.Icon(
-                                painter = bookmarkPainter,
-                                contentDescription = if (isBookmarked) "Bookmarked" else "Bookmark",
-                                onClick = {
-                                    val currentChapter = chapter ?: return@Icon
-                                    val visibleIdx = verseOffsets.entries
-                                        .filter { it.value <= scrollState.value + 60 }
-                                        .maxByOrNull { it.value }
-                                        ?.key
-                                        ?: verseOffsets.entries
-                                            .minByOrNull { abs(it.value - scrollState.value) }
-                                            ?.key
-                                        ?: 0
-                                    val visibleVerse = currentChapter.verses.getOrNull(visibleIdx)
-                                    viewModel.toggleBookmark(
-                                        scrollPermille = readCurrentPermille(),
-                                        visibleVerseNumber = visibleVerse?.number,
-                                        visibleSnippet = visibleVerse?.text,
-                                    )
-                                }
-                            ),
-                        )
+                    if (!isFullScreen) {
+                        // Top Bar with optional seamless Language Toggle right up by the title ("1 Nephi 2")
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(bottom = 0.5f.gridUnitsAsDp())
+                        ) {
+                            LightTopBar(
+                                leftButton = LightBarButton.LightIcon(
+                                    icon = LightIcons.BACK,
+                                    onClick = { goBack() }
+                                ),
+                                center = if (showLanguageToggle) {
+                                    null
+                                } else {
+                                    LightTopBarCenter.Text(text = chapter?.title ?: "Reader")
+                                },
+                                rightButton = LightBarButton.Icon(
+                                    painter = bookmarkPainter,
+                                    contentDescription = if (isBookmarked) "Bookmarked" else "Bookmark",
+                                    onClick = {
+                                        val currentChapter = chapter ?: return@Icon
+                                        if (pageMode == ReaderPageMode.PAGED) {
+                                            val curPage = pages.getOrNull(currentPageIdx)
+                                            viewModel.toggleBookmark(
+                                                scrollPermille = readCurrentPermille(),
+                                                visibleVerseNumber = curPage?.firstVerseNumber,
+                                                visibleSnippet = curPage?.previewSnippet,
+                                            )
+                                        } else {
+                                            val visibleIdx = verseOffsets.entries
+                                                .filter { it.value <= scrollState.value + 60 }
+                                                .maxByOrNull { it.value }
+                                                ?.key
+                                                ?: verseOffsets.entries
+                                                    .minByOrNull { abs(it.value - scrollState.value) }
+                                                    ?.key
+                                                ?: 0
+                                            val visibleVerse = currentChapter.verses.getOrNull(visibleIdx)
+                                            viewModel.toggleBookmark(
+                                                scrollPermille = readCurrentPermille(),
+                                                visibleVerseNumber = visibleVerse?.number,
+                                                visibleSnippet = visibleVerse?.text,
+                                            )
+                                        }
+                                    }
+                                ),
+                            )
 
-                        if (showLanguageToggle) {
-                            Row(
-                                modifier = Modifier
-                                    .align(Alignment.Center)
-                                    .padding(horizontal = 4.2f.gridUnitsAsDp()),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.Center,
-                            ) {
-                                LightText(
-                                    text = chapter?.title ?: "Reader",
-                                    variant = LightTextVariant.Fine,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis,
-                                    modifier = Modifier.weight(1f, fill = false)
-                                )
-                                Spacer(modifier = Modifier.width(6.dp))
-                                Box(
+                            if (showLanguageToggle) {
+                                Row(
                                     modifier = Modifier
-                                        .border(
-                                            width = 1.dp,
-                                            color = LightThemeTokens.colors.content.copy(alpha = 0.85f),
-                                            shape = RoundedCornerShape(4.dp)
-                                        )
-                                        .lightClickable { viewModel.cycleLanguage() }
-                                        .padding(horizontal = 6.dp, vertical = 2.dp),
-                                    contentAlignment = Alignment.Center
+                                        .align(Alignment.Center)
+                                        .padding(horizontal = 4.2f.gridUnitsAsDp()),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.Center,
                                 ) {
                                     LightText(
-                                        text = currentLanguage.shortBadge,
-                                        variant = LightTextVariant.Detail
+                                        text = chapter?.title ?: "Reader",
+                                        variant = LightTextVariant.Fine,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                        modifier = Modifier.weight(1f, fill = false)
                                     )
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Box(
+                                        modifier = Modifier
+                                            .border(
+                                                width = 1.dp,
+                                                color = LightThemeTokens.colors.content.copy(alpha = 0.85f),
+                                                shape = RoundedCornerShape(4.dp)
+                                            )
+                                            .lightClickable { viewModel.cycleLanguage() }
+                                            .padding(horizontal = 6.dp, vertical = 2.dp),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        LightText(
+                                            text = currentLanguage.shortBadge,
+                                            variant = LightTextVariant.Detail
+                                        )
+                                    }
                                 }
                             }
                         }
-                    }
 
-                    // Secondary Sub-header: Subtitle and Font Size Toggle
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(start = 1.5f.gridUnitsAsDp(), end = 1.5f.gridUnitsAsDp(), top = 4.dp, bottom = 4.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        val subText = when {
-                            isLoadingLanguage -> "Loading ${currentLanguage.nativeName}..."
-                            !chapter?.subtitle.isNullOrBlank() -> chapter?.subtitle
-                            lookupEnabled -> "Hold any word to define"
-                            else -> null
-                        }
-                        if (subText != null) {
+                        // Secondary Sub-header: Subtitle, Page/Scroll Toggle, and Font Size Toggle
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(start = sidePadDp, end = sidePadDp, top = 4.dp, bottom = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            val subText = when {
+                                isLoadingLanguage -> "Loading ${currentLanguage.nativeName}..."
+                                pageMode == ReaderPageMode.PAGED && pages.isNotEmpty() -> {
+                                    val baseSub = chapter?.subtitle?.takeIf { it.isNotBlank() }
+                                    val pageTag = "P. ${currentPageIdx + 1}/${pages.size}"
+                                    if (baseSub != null) "$pageTag • $baseSub" else pageTag
+                                }
+                                !chapter?.subtitle.isNullOrBlank() -> chapter?.subtitle
+                                lookupEnabled -> "Hold word to define • 2× tap full"
+                                else -> "Double-tap text for full screen"
+                            }
                             LightText(
-                                text = subText,
+                                text = subText.orEmpty(),
                                 variant = LightTextVariant.Detail,
                                 lighten = true,
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis,
                                 modifier = Modifier.weight(1f)
                             )
-                        } else {
-                            Spacer(modifier = Modifier.weight(1f))
-                        }
 
-                        LightText(
-                            text = fontSize.displayLabel,
-                            variant = LightTextVariant.Detail,
-                            lighten = true,
-                            modifier = Modifier
-                                .padding(start = 12.dp)
-                                .lightClickable { viewModel.cycleFontSize(readCurrentPermille()) }
-                        )
-                    }
+                            Box(
+                                modifier = Modifier
+                                    .padding(start = 8.dp)
+                                    .border(
+                                        width = 1.dp,
+                                        color = LightThemeTokens.colors.content.copy(alpha = 0.45f),
+                                        shape = RoundedCornerShape(4.dp)
+                                    )
+                                    .lightClickable { viewModel.togglePageMode(readCurrentPermille()) }
+                                    .padding(horizontal = 6.dp, vertical = 2.dp),
+                            ) {
+                                LightText(
+                                    text = pageMode.chipLabel,
+                                    variant = LightTextVariant.Detail
+                                )
+                            }
 
-                    languageNotice?.let { notice ->
-                        Box(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(
-                                    start = 1.5f.gridUnitsAsDp(),
-                                    end = 1.5f.gridUnitsAsDp(),
-                                    top = 4.dp,
-                                    bottom = 6.dp
-                                )
-                                .border(
-                                    width = 1.dp,
-                                    color = LightThemeTokens.colors.content.copy(alpha = 0.45f),
-                                    shape = RoundedCornerShape(4.dp)
-                                )
-                                .padding(horizontal = 10.dp, vertical = 6.dp)
-                        ) {
                             LightText(
-                                text = notice,
+                                text = fontSize.displayLabel,
                                 variant = LightTextVariant.Detail,
-                                lighten = true
+                                lighten = true,
+                                modifier = Modifier
+                                    .padding(start = 10.dp)
+                                    .lightClickable { viewModel.cycleFontSize(readCurrentPermille()) }
                             )
                         }
+
+                        languageNotice?.let { notice ->
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(
+                                        start = sidePadDp,
+                                        end = sidePadDp,
+                                        top = 4.dp,
+                                        bottom = 6.dp
+                                    )
+                                    .border(
+                                        width = 1.dp,
+                                        color = LightThemeTokens.colors.content.copy(alpha = 0.45f),
+                                        shape = RoundedCornerShape(4.dp)
+                                    )
+                                    .padding(horizontal = 10.dp, vertical = 6.dp)
+                            ) {
+                                LightText(
+                                    text = notice,
+                                    variant = LightTextVariant.Detail,
+                                    lighten = true
+                                )
+                            }
+                        }
                     }
 
-                    // Content as a Single Continuous Page
+                    // Reading Content Surface (Continuous Scroll OR Book-Style Pages)
                     Box(
                         modifier = Modifier
                             .weight(1f)
                             .fillMaxWidth()
+                            .onSizeChanged { pagedViewportSize = it }
+                            .pointerInput(isOverlayOpen) {
+                                if (isOverlayOpen) return@pointerInput
+                                detectTapGestures(
+                                    onDoubleTap = { viewModel.toggleFullScreen() }
+                                )
+                            }
                     ) {
                         val currentChapter = chapter
                         if (currentChapter == null) {
@@ -717,14 +871,60 @@ class ReaderScreen(
                                     variant = LightTextVariant.Subheading
                                 )
                             }
+                        } else if (pageMode == ReaderPageMode.PAGED) {
+                            val activePage = pages.getOrNull(currentPageIdx)
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .padding(
+                                        horizontal = sidePadDp,
+                                        vertical = if (isFullScreen) 16.dp else 8.dp,
+                                    )
+                            ) {
+                                activePage?.slices?.forEach { slice ->
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(
+                                                top = if (slice.showVerseNumber) 6.dp else 2.dp,
+                                                bottom = 8.dp,
+                                            ),
+                                        verticalAlignment = Alignment.Top,
+                                    ) {
+                                        if (slice.verseNumber != null) {
+                                            LightText(
+                                                text = if (slice.showVerseNumber) "${slice.verseNumber} " else "",
+                                                variant = LightTextVariant.Detail,
+                                                lighten = true,
+                                                modifier = Modifier.width(32.dp),
+                                            )
+                                        }
+                                        LookupableVerseText(
+                                            text = slice.text,
+                                            variant = textVariant,
+                                            lookupEnabled = lookupEnabled,
+                                            onDoubleTap = { viewModel.toggleFullScreen() },
+                                            onLongPressChar = { charIndex ->
+                                                haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                                                viewModel.lookupWordAt(
+                                                    text = slice.text,
+                                                    charIndex = charIndex,
+                                                    verseNumber = slice.verseNumber,
+                                                )
+                                            },
+                                            modifier = Modifier.weight(1f),
+                                        )
+                                    }
+                                }
+                            }
                         } else {
                             LightScrollView(
                                 scrollState = scrollState,
                                 modifier = Modifier
                                     .fillMaxSize()
-                                    .padding(start = 1.5f.gridUnitsAsDp())
+                                    .padding(start = sidePadDp)
                             ) {
-                                Spacer(modifier = Modifier.height(12.dp))
+                                Spacer(modifier = Modifier.height(if (isFullScreen) 18.dp else 12.dp))
 
                                 currentChapter.verses.forEachIndexed { idx, verse ->
                                     Row(
@@ -733,7 +933,7 @@ class ReaderScreen(
                                             .onGloballyPositioned { coords ->
                                                 verseOffsets[idx] = coords.positionInParent().y.toInt()
                                             }
-                                            .padding(end = 1.5f.gridUnitsAsDp(), top = 6.dp, bottom = 8.dp),
+                                            .padding(end = sidePadDp, top = 6.dp, bottom = 8.dp),
                                         verticalAlignment = Alignment.Top
                                     ) {
                                         verse.number?.let { num ->
@@ -748,6 +948,7 @@ class ReaderScreen(
                                             text = verse.text,
                                             variant = textVariant,
                                             lookupEnabled = lookupEnabled,
+                                            onDoubleTap = { viewModel.toggleFullScreen() },
                                             onLongPressChar = { charIndex ->
                                                 haptics.performHapticFeedback(HapticFeedbackType.LongPress)
                                                 viewModel.lookupWordAt(
@@ -761,40 +962,96 @@ class ReaderScreen(
                                     }
                                 }
 
-                                // Quiet Footer & Swipe Affordance
-                                Spacer(modifier = Modifier.height(20.dp))
+                                if (!isFullScreen) {
+                                    // Quiet Footer & Swipe Affordance
+                                    Spacer(modifier = Modifier.height(20.dp))
 
-                                Row(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .padding(end = 1.5f.gridUnitsAsDp(), top = 8.dp, bottom = 12.dp),
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    if (currentChapter.prevId != null) {
-                                        LightText(
-                                            text = "← ${currentChapter.prevLabel ?: "Previous"}",
-                                            variant = LightTextVariant.Detail,
-                                            lighten = true,
-                                            modifier = Modifier
-                                                .weight(1f)
-                                                .lightClickable {
-                                                    viewModel.loadContent(currentChapter.prevId)
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(end = sidePadDp, top = 8.dp, bottom = 12.dp),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        if (currentChapter.prevId != null) {
+                                            LightText(
+                                                text = "← ${currentChapter.prevLabel ?: "Previous"}",
+                                                variant = LightTextVariant.Detail,
+                                                lighten = true,
+                                                modifier = Modifier
+                                                    .weight(1f)
+                                                    .lightClickable {
+                                                        viewModel.loadContent(currentChapter.prevId)
+                                                    }
+                                            )
+                                        } else {
+                                            Spacer(modifier = Modifier.weight(1f))
+                                        }
+
+                                        if (currentChapter.nextId != null) {
+                                            LightText(
+                                                text = "${currentChapter.nextLabel ?: "Next"} →",
+                                                variant = LightTextVariant.Detail,
+                                                lighten = true,
+                                                modifier = Modifier.lightClickable {
+                                                    viewModel.loadContent(currentChapter.nextId)
                                                 }
-                                        )
-                                    } else {
-                                        Spacer(modifier = Modifier.weight(1f))
+                                            )
+                                        }
                                     }
+                                } else {
+                                    Spacer(modifier = Modifier.height(20.dp))
+                                }
+                            }
+                        }
+                    }
 
-                                    if (currentChapter.nextId != null) {
-                                        LightText(
-                                            text = "${currentChapter.nextLabel ?: "Next"} →",
-                                            variant = LightTextVariant.Detail,
-                                            lighten = true,
-                                            modifier = Modifier.lightClickable {
-                                                viewModel.loadContent(currentChapter.nextId)
-                                            }
-                                        )
-                                    }
+                    // Quiet Bottom Page Bar in Paged Mode (hidden automatically in Full Screen)
+                    if (!isFullScreen && pageMode == ReaderPageMode.PAGED && chapter != null) {
+                        val canGoBack = currentPageIdx > 0 || chapter?.prevId != null
+                        val canGoForward = (pages.isNotEmpty() && currentPageIdx < pages.lastIndex) || chapter?.nextId != null
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = sidePadDp, vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            if (canGoBack) {
+                                LightText(
+                                    text = if (currentPageIdx > 0) "← Prev" else "← ${chapter?.prevLabel ?: "Prev"}",
+                                    variant = LightTextVariant.Detail,
+                                    lighten = true,
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .lightClickable { goPrevPageOrChapter() },
+                                )
+                            } else {
+                                Spacer(modifier = Modifier.weight(1f))
+                            }
+
+                            if (pages.isNotEmpty()) {
+                                LightText(
+                                    text = "${currentPageIdx + 1} / ${pages.size}",
+                                    variant = LightTextVariant.Detail,
+                                    lighten = true,
+                                    modifier = Modifier.padding(horizontal = 8.dp),
+                                )
+                            }
+
+                            Box(
+                                modifier = Modifier.weight(1f),
+                                contentAlignment = Alignment.CenterEnd,
+                            ) {
+                                if (canGoForward) {
+                                    LightText(
+                                        text = if (pages.isNotEmpty() && currentPageIdx < pages.lastIndex) {
+                                            "Next →"
+                                        } else {
+                                            "${chapter?.nextLabel ?: "Next"} →"
+                                        },
+                                        variant = LightTextVariant.Detail,
+                                        lighten = true,
+                                        modifier = Modifier.lightClickable { goNextPageOrChapter() },
+                                    )
                                 }
                             }
                         }
@@ -836,6 +1093,7 @@ private fun LookupableVerseText(
     text: String,
     variant: LightTextVariant,
     lookupEnabled: Boolean,
+    onDoubleTap: () -> Unit,
     onLongPressChar: (Int) -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -843,19 +1101,18 @@ private fun LookupableVerseText(
     val color = LightThemeTokens.colors.content
     var layoutResult by remember(text, variant) { mutableStateOf<TextLayoutResult?>(null) }
 
-    val gestureModifier = if (lookupEnabled) {
-        modifier.pointerInput(text, lookupEnabled) {
-            detectTapGestures(
-                onLongPress = { position ->
+    val gestureModifier = modifier.pointerInput(text, lookupEnabled) {
+        detectTapGestures(
+            onDoubleTap = { onDoubleTap() },
+            onLongPress = if (lookupEnabled) {
+                { position ->
                     layoutResult?.let { layout ->
                         val offset = layout.getOffsetForPosition(position)
                         onLongPressChar(offset)
                     }
                 }
-            )
-        }
-    } else {
-        modifier
+            } else null,
+        )
     }
 
     Text(

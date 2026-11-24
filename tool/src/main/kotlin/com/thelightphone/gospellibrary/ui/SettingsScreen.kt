@@ -24,6 +24,7 @@ import com.thelightphone.gospellibrary.data.GospelRepository
 import com.thelightphone.gospellibrary.db.DownloadedLanguageEntity
 import com.thelightphone.gospellibrary.db.GospelDatabase
 import com.thelightphone.gospellibrary.model.GospelLanguage
+import com.thelightphone.gospellibrary.model.ReaderPageMode
 import com.thelightphone.sdk.LightScreen
 import com.thelightphone.sdk.LightViewModel
 import com.thelightphone.sdk.SealedLightActivity
@@ -59,6 +60,8 @@ class SettingsViewModel(
 
     private val _activeLanguageCode = MutableStateFlow(GospelLanguage.ENG.code)
     val activeLanguageCode: StateFlow<String> = _activeLanguageCode.asStateFlow()
+
+    val pageMode: StateFlow<ReaderPageMode> = repository.pageMode
 
     private val _busyKey = MutableStateFlow<String?>(null)
     val busyKey: StateFlow<String?> = _busyKey.asStateFlow()
@@ -163,6 +166,9 @@ class SettingsViewModel(
             _progressText.value = null
         }
     }
+    fun togglePageMode() {
+        repository.setPageMode(pageMode.value.toggle())
+    }
 }
 
 class SettingsScreen(
@@ -181,7 +187,8 @@ class SettingsScreen(
         },
         assetStreamProvider = { path ->
             lightContext.readAsset(path).inputStream()
-        }
+        },
+        filesDir = lightContext.filesDir,
     )
 
     override val viewModelClass: Class<SettingsViewModel>
@@ -194,6 +201,7 @@ class SettingsScreen(
         val themeColors by LightThemeController.colors.collectAsState()
         val downloadedLanguages by viewModel.downloadedLanguages.collectAsState()
         val activeLanguageCode by viewModel.activeLanguageCode.collectAsState()
+        val pageMode by viewModel.pageMode.collectAsState()
         val busyKey by viewModel.busyKey.collectAsState()
         val progressText by viewModel.progressText.collectAsState()
         val errorText by viewModel.errorText.collectAsState()
@@ -264,7 +272,7 @@ class SettingsScreen(
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .padding(end = rightPad, bottom = 18.dp)
+                                .padding(end = rightPad, bottom = 10.dp)
                                 .border(
                                     width = 1.dp,
                                     color = LightThemeTokens.colors.content.copy(alpha = 0.4f),
@@ -290,6 +298,43 @@ class SettingsScreen(
                                 label = if (isDark) "Light" else "Dark",
                                 highlighted = false,
                                 onClick = { LightThemeController.toggle() }
+                            )
+                        }
+
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(end = rightPad, bottom = 18.dp)
+                                .border(
+                                    width = 1.dp,
+                                    color = LightThemeTokens.colors.content.copy(alpha = 0.4f),
+                                    shape = RoundedCornerShape(4.dp)
+                                )
+                                .lightClickable { viewModel.togglePageMode() }
+                                .padding(horizontal = 12.dp, vertical = 12.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                LightText(
+                                    text = "Reading Format: ${pageMode.label}",
+                                    variant = LightTextVariant.Subheading
+                                )
+                                LightText(
+                                    text = if (pageMode == ReaderPageMode.PAGED) {
+                                        "Swipe on words to turn pages like a book. Double-tap for full screen."
+                                    } else {
+                                        "Continuous chapter scroll. Double-tap text for full screen."
+                                    },
+                                    variant = LightTextVariant.Detail,
+                                    lighten = true,
+                                    modifier = Modifier.padding(top = 2.dp)
+                                )
+                            }
+                            Spacer(modifier = Modifier.width(8.dp))
+                            SettingsActionPill(
+                                label = pageMode.chipLabel,
+                                highlighted = pageMode == ReaderPageMode.PAGED,
+                                onClick = { viewModel.togglePageMode() }
                             )
                         }
 

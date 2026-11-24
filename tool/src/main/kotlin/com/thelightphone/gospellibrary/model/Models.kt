@@ -223,5 +223,22 @@ data class ContentChapter(
 enum class ReaderFontSize(val label: String, val displayLabel: String) {
     COMPACT("Small", "Aa-"),
     REGULAR("Normal", "Aa"),
-    LARGE("Large", "Aa+"),
+    LARGE("Large", "Aa+");
+
+    companion object {
+        fun fromName(name: String?): ReaderFontSize =
+            entries.firstOrNull { it.name.equals(name, ignoreCase = true) } ?: REGULAR
+    }
+}
+
+enum class ReaderPageMode(val label: String, val chipLabel: String) {
+    SCROLL("Scroll", "Scroll"),
+    PAGED("Pages", "Pages");
+
+    fun toggle(): ReaderPageMode = if (this == SCROLL) PAGED else SCROLL
+
+    companion object {
+        fun fromName(name: String?): ReaderPageMode =
+            entries.firstOrNull { it.name.equals(name, ignoreCase = true) } ?: SCROLL
+    }
 }

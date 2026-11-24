@@ -8,6 +8,10 @@ import com.thelightphone.gospellibrary.data.StandardWorksData
 import com.thelightphone.gospellibrary.model.ContentVerse
 import com.thelightphone.gospellibrary.model.GospelLanguage
 import com.thelightphone.gospellibrary.model.ReaderFontSize
+import com.thelightphone.gospellibrary.model.ReaderPageMode
+import com.thelightphone.gospellibrary.ui.GospelPageSlice
+import com.thelightphone.gospellibrary.ui.GospelReaderPage
+import com.thelightphone.gospellibrary.ui.GospelReaderPaginator
 import java.io.File
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -345,5 +349,26 @@ class GospelLibraryTest {
         val inflected = entries.first { it.headword == "abrahámem" }
         assertEquals("Abrahám", inflected.reading)
         assertEquals(base.definition, inflected.definition)
+    }
+
+    @Test
+    fun readerPageModeAndPaginatorPermilleMapping() {
+        assertEquals(ReaderPageMode.PAGED, ReaderPageMode.SCROLL.toggle())
+        assertEquals(ReaderPageMode.SCROLL, ReaderPageMode.PAGED.toggle())
+        assertEquals(ReaderPageMode.PAGED, ReaderPageMode.fromName("PAGED"))
+        assertEquals(ReaderPageMode.SCROLL, ReaderPageMode.fromName("unknown"))
+
+        val samplePages = listOf(
+            GospelReaderPage(0, listOf(GospelPageSlice(0, 1, true, "First page")), permilleStart = 0),
+            GospelReaderPage(1, listOf(GospelPageSlice(1, 2, true, "Second page")), permilleStart = 320),
+            GospelReaderPage(2, listOf(GospelPageSlice(2, 3, true, "Third page")), permilleStart = 680),
+        )
+        assertEquals(0, GospelReaderPaginator.pageIndexForPermille(samplePages, 0))
+        assertEquals(0, GospelReaderPaginator.pageIndexForPermille(samplePages, 250))
+        assertEquals(1, GospelReaderPaginator.pageIndexForPermille(samplePages, 320))
+        assertEquals(1, GospelReaderPaginator.pageIndexForPermille(samplePages, 600))
+        assertEquals(2, GospelReaderPaginator.pageIndexForPermille(samplePages, 700))
+        assertEquals(2, GospelReaderPaginator.pageIndexForPermille(samplePages, 1000))
+        assertEquals(0, GospelReaderPaginator.pageIndexForPermille(emptyList(), 500))
     }
 }

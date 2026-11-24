@@ -11,17 +11,23 @@ import com.thelightphone.gospellibrary.model.ConferenceTalk
 import com.thelightphone.gospellibrary.model.ContentChapter
 import com.thelightphone.gospellibrary.model.ContentVerse
 import com.thelightphone.gospellibrary.model.GospelLanguage
+import com.thelightphone.gospellibrary.model.ReaderFontSize
+import com.thelightphone.gospellibrary.model.ReaderPageMode
 import com.thelightphone.gospellibrary.model.WordLookupResult
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
+import java.io.File
 import java.io.InputStream
 
 data class ConferenceSyncStatus(
@@ -32,9 +38,65 @@ data class ConferenceSyncStatus(
 class GospelRepository(
     private val database: GospelDatabase,
     var assetStreamProvider: ((String) -> InputStream?)? = null,
+    private var appFilesDir: File? = null,
 ) {
+    private val _pageMode = MutableStateFlow(ReaderPageMode.SCROLL)
+    val pageMode: StateFlow<ReaderPageMode> = _pageMode.asStateFlow()
+
+    private val _fontSize = MutableStateFlow(ReaderFontSize.REGULAR)
+    val fontSize: StateFlow<ReaderFontSize> = _fontSize.asStateFlow()
+
     init {
         GeneralConferenceData.ensureBundledLoaded(assetStreamProvider)
+        loadReaderPrefsFromDisk()
+    }
+
+    internal fun attachFilesDir(dir: File?) {
+        if (dir != null && appFilesDir == null) {
+            appFilesDir = dir
+            loadReaderPrefsFromDisk()
+        }
+    }
+
+    private fun prefsFile(): File? = appFilesDir?.let { File(it, "reader_prefs.txt") }
+
+    private fun loadReaderPrefsFromDisk() {
+        val file = prefsFile() ?: return
+        if (!file.isFile) return
+        runCatching {
+            file.readLines(Charsets.UTF_8).forEach { line ->
+                val idx = line.indexOf('=')
+                if (idx > 0) {
+                    val key = line.substring(0, idx).trim()
+                    val value = line.substring(idx + 1).trim()
+                    when (key) {
+                        "pageMode" -> _pageMode.value = ReaderPageMode.fromName(value)
+                        "fontSize" -> _fontSize.value = ReaderFontSize.fromName(value)
+                    }
+                }
+            }
+        }
+    }
+
+    private fun saveReaderPrefsToDisk() {
+        val file = prefsFile() ?: return
+        runCatching {
+            file.parentFile?.mkdirs()
+            file.writeText(
+                "pageMode=${_pageMode.value.name}\nfontSize=${_fontSize.value.name}\n",
+                Charsets.UTF_8,
+            )
+        }
+    }
+
+    fun setPageMode(mode: ReaderPageMode) {
+        _pageMode.value = mode
+        saveReaderPrefsToDisk()
+    }
+
+    fun setFontSize(size: ReaderFontSize) {
+        _fontSize.value = size
+        saveReaderPrefsToDisk()
     }
 
     val bookmarks: Flow<List<BookmarkEntity>> = database.bookmarkDao().getAllBookmarks()
@@ -600,13 +662,17 @@ class GospelRepository(
         fun getInstance(
             dbProvider: () -> GospelDatabase,
             assetStreamProvider: ((String) -> InputStream?)? = null,
+            filesDir: File? = null,
         ): GospelRepository {
             return instance ?: synchronized(this) {
-                instance ?: GospelRepository(dbProvider(), assetStreamProvider).also { instance = it }
+                instance ?: GospelRepository(dbProvider(), assetStreamProvider, filesDir).also { instance = it }
             }.apply {
                 if (assetStreamProvider != null && this.assetStreamProvider == null) {
                     this.assetStreamProvider = assetStreamProvider
                     ensureConferenceAssetLoaded()
+                }
+                if (filesDir != null) {
+                    attachFilesDir(filesDir)
                 }
             }
         }
