@@ -2,7 +2,6 @@ package com.thelightphone.gospellibrary.ui
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
-import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -25,7 +24,6 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -643,9 +641,6 @@ class ReaderScreen(
         )
 
         val haptics = LocalHapticFeedback.current
-        val farLeftEdgePx = with(density) { 44.dp.toPx() }
-        var horizontalDragAccumulator by remember(chapter?.id, pageMode) { mutableFloatStateOf(0f) }
-        var dragStartX by remember(chapter?.id, pageMode) { mutableFloatStateOf(0f) }
         val showLanguageToggle = availableLanguages.size > 1
         val isOverlayOpen = isLookingUp || lookupResult != null
 
@@ -654,32 +649,12 @@ class ReaderScreen(
                 modifier = Modifier
                     .fillMaxSize()
                     .background(LightThemeTokens.colors.background)
-                    .pointerInput(chapter?.id, isOverlayOpen, pageMode, pages.size, currentPageIdx) {
-                        if (isOverlayOpen) return@pointerInput
-                        detectHorizontalDragGestures(
-                            onDragStart = { offset ->
-                                dragStartX = offset.x
-                                horizontalDragAccumulator = 0f
-                            },
-                            onDragEnd = {
-                                if (horizontalDragAccumulator > 70f) {
-                                    // Swipe from the far left edge always goes back (even in Full Screen / Pages)
-                                    if (dragStartX <= farLeftEdgePx) {
-                                        goBack()
-                                    } else {
-                                        goPrevPageOrChapter()
-                                    }
-                                } else if (horizontalDragAccumulator < -75f) {
-                                    goNextPageOrChapter()
-                                }
-                                horizontalDragAccumulator = 0f
-                            },
-                            onDragCancel = { horizontalDragAccumulator = 0f },
-                            onHorizontalDrag = { _, dragAmount ->
-                                horizontalDragAccumulator += dragAmount
-                            }
-                        )
-                    }
+                    .readerHorizontalSwipes(
+                        enabled = !isOverlayOpen,
+                        onEdgeSwipeBack = { goBack() },
+                        onSwipeRight = { goPrevPageOrChapter() },
+                        onSwipeLeft = { goNextPageOrChapter() },
+                    )
             ) {
                 Column(modifier = Modifier.fillMaxSize()) {
                     if (!isFullScreen) {
