@@ -152,3 +152,15 @@ interface LanguageDictionaryDao {
     @Query("DELETE FROM language_dict_entries WHERE dictKey = :dictKey")
     suspend fun deleteDictionary(dictKey: String)
 }
+
+@Dao
+interface HymnDao {
+    @Query("SELECT * FROM synced_hymns ORDER BY number ASC")
+    fun getAllSyncedHymns(): Flow<List<SyncedHymnEntity>>
+
+    @Query("SELECT * FROM synced_hymns ORDER BY number ASC")
+    suspend fun getAllSyncedHymnsSync(): List<SyncedHymnEntity>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertHymns(hymns: List<SyncedHymnEntity>)
+}

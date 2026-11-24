@@ -121,7 +121,7 @@ class SearchViewModel(
         activeCancel.set(true)
         searchJob?.cancel()
 
-        if (trimmed.length < 2) {
+        if (trimmed.length < 2 && GospelSearchEngine.parseHymnNumberQuery(trimmed) == null) {
             _results.value = emptyList()
             _matchedTopics.value = emptyList()
             _isSearching.value = false
@@ -163,7 +163,11 @@ class SearchScreen(
                 GospelDatabase::class.java,
                 GospelRepository.DATABASE_NAME
             ) {
-                addMigrations(GospelDatabase.MIGRATION_2_3, GospelDatabase.MIGRATION_3_4)
+                addMigrations(
+                    GospelDatabase.MIGRATION_2_3,
+                    GospelDatabase.MIGRATION_3_4,
+                    GospelDatabase.MIGRATION_4_5,
+                )
                 fallbackToDestructiveMigration()
             }
         },
@@ -207,7 +211,7 @@ class SearchScreen(
             ) {
                 if (isEditing) {
                     LightTextInputEditor(
-                        title = "Search Scriptures & Talks",
+                        title = "Search Scriptures, Talks & Hymns",
                         state = textFieldState,
                         keyboardOptionsFlow = keyboardOptionsFlow,
                         submitIcon = LightIcons.SEARCH,

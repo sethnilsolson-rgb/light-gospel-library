@@ -371,4 +371,105 @@ class GospelLibraryTest {
         assertEquals(2, GospelReaderPaginator.pageIndexForPermille(samplePages, 1000))
         assertEquals(0, GospelReaderPaginator.pageIndexForPermille(emptyList(), 500))
     }
+
+    @Test
+    fun bundledHymnbooksLoadAndSearchCorrectly() {
+        val assetsRoot = java.io.File("src/main/assets")
+        val provider: (String) -> java.io.InputStream? = { path ->
+            val f = java.io.File(assetsRoot, path)
+            if (f.isFile) f.inputStream() else null
+        }
+
+        com.thelightphone.gospellibrary.data.HymnsData.ensureBundledLoaded(provider)
+        val homeAndChurch = com.thelightphone.gospellibrary.data.HymnsData.getHymnsForBook(
+            com.thelightphone.gospellibrary.model.HymnBook.HOME_AND_CHURCH
+        )
+        val classic = com.thelightphone.gospellibrary.data.HymnsData.getHymnsForBook(
+            com.thelightphone.gospellibrary.model.HymnBook.CLASSIC_1985
+        )
+
+        assertTrue(homeAndChurch.size >= 90, "Expected at least 90 Home & Church hymns, got ${homeAndChurch.size}")
+        assertTrue(classic.size >= 335, "Expected at least 335 classic 1985 hymns, got ${classic.size}")
+
+        val spiritOfGod = com.thelightphone.gospellibrary.data.HymnsData.getHymnContent("hymn/1985/2")
+        assertNotNull(spiritOfGod)
+        assertTrue(spiritOfGod.title.contains("The Spirit of God"))
+        assertTrue(spiritOfGod.verses.isNotEmpty())
+        assertEquals("hymn/1985/1", spiritOfGod.prevId)
+        assertEquals("hymn/1985/3", spiritOfGod.nextId)
+
+        val comeThouFount = com.thelightphone.gospellibrary.data.HymnsData.getHymnContent("hymn/home-and-church/1001")
+        assertNotNull(comeThouFount)
+        assertTrue(comeThouFount.title.contains("Come, Thou Fount"))
+        assertTrue(comeThouFount.verses.isNotEmpty())
+
+        val allHymns = com.thelightphone.gospellibrary.data.HymnsData.getAllMergedHymns()
+        val numSearch = com.thelightphone.gospellibrary.data.GospelSearchEngine.search(
+            rawQuery = "1001",
+            scope = com.thelightphone.gospellibrary.data.SearchScope.HYMNS,
+            assetStreamProvider = null,
+            conferenceTalks = emptyList(),
+            hymns = allHymns,
+        )
+        assertTrue(numSearch.results.any { it.contentId == "hymn/home-and-church/1001" })
+
+        val lyricSearch = com.thelightphone.gospellibrary.data.GospelSearchEngine.search(
+            rawQuery = "Spirit of God like a fire",
+            scope = com.thelightphone.gospellibrary.data.SearchScope.HYMNS,
+            assetStreamProvider = null,
+            conferenceTalks = emptyList(),
+            hymns = allHymns,
+        )
+        assertTrue(lyricSearch.results.any { it.contentId == "hymn/1985/2" })
+    }
+
+    @Test
+    fun hymnSyncManifestAndHtmlParsing() {
+        val manifestHtml = """
+            <h2 class="label"><p class="title">Easter</p></h2>
+            <a href="/study/music/hymns-for-home-and-church/he-is-risen-new?lang=eng" class="list-tile">
+              <p class="title">He Is Risen (New)</p>
+            </a>
+        """.trimIndent()
+        val entries = com.thelightphone.gospellibrary.data.HymnSyncService.parseHomeAndChurchManifest(manifestHtml)
+        assertEquals(1, entries.size)
+        assertEquals("Easter", entries.first().topic)
+        assertEquals("he-is-risen-new", entries.first().slug)
+        assertEquals("/music/hymns-for-home-and-church/he-is-risen-new", entries.first().uri)
+
+        val hymnHtml = """
+            <header>
+              <p class="song-number">1099</p>
+              <h1>New Sample Hymn</h1>
+            </header>
+            <div class="poetry">
+              <div class="stanza">
+                <p class="line">1. First line of verse one,</p>
+                <p class="line">Second line of verse one.</p>
+              </div>
+              <div class="chorus">
+                <p class="label">Chorus</p>
+                <p class="line">Sing praises forevermore.</p>
+              </div>
+            </div>
+            <p class="credit">Text: Sample Author</p>
+        """.trimIndent()
+        val parsed = com.thelightphone.gospellibrary.data.HymnSyncService.parseHymnHtml(
+            book = com.thelightphone.gospellibrary.model.HymnBook.HOME_AND_CHURCH,
+            uri = "/music/hymns-for-home-and-church/new-sample-hymn",
+            slug = "new-sample-hymn",
+            topic = "Easter",
+            htmlBody = hymnHtml,
+            fallbackTitle = "Fallback",
+        )
+        assertNotNull(parsed)
+        assertEquals("hymn/home-and-church/1099", parsed.id)
+        assertEquals(1099, parsed.number)
+        assertEquals("New Sample Hymn", parsed.title)
+        val stanzas = com.thelightphone.gospellibrary.data.HymnsData.decodeStanzas(parsed.stanzasEncoded)
+        assertEquals(2, stanzas.size)
+        assertTrue(stanzas[0].contains("First line of verse one"))
+        assertTrue(stanzas[1].startsWith("[Chorus]"))
+        assertEquals("Text: Sample Author", parsed.credits)
+    }
 }

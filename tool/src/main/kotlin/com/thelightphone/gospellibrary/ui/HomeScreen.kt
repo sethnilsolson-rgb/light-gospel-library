@@ -18,9 +18,11 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewModelScope
 import com.thelightphone.gospellibrary.data.GeneralConferenceData
 import com.thelightphone.gospellibrary.data.GospelRepository
+import com.thelightphone.gospellibrary.data.HymnsData
 import com.thelightphone.gospellibrary.data.StandardWorksData
 import com.thelightphone.gospellibrary.db.GospelDatabase
 import com.thelightphone.gospellibrary.db.LastReadEntity
+import com.thelightphone.gospellibrary.model.HymnBook
 import com.thelightphone.sdk.InitialScreen
 import com.thelightphone.sdk.LightScreen
 import com.thelightphone.sdk.LightViewModel
@@ -61,14 +63,22 @@ class HomeScreenViewModel(
     private val _latestConferenceSubtitle = MutableStateFlow("38 complete talks • Tap to read or update")
     val latestConferenceSubtitle: StateFlow<String> = _latestConferenceSubtitle.asStateFlow()
 
+    private val _homeAndChurchHymnCount = MutableStateFlow(90)
+    val homeAndChurchHymnCount: StateFlow<Int> = _homeAndChurchHymnCount.asStateFlow()
+
+    private val _classicHymnCount = MutableStateFlow(338)
+    val classicHymnCount: StateFlow<Int> = _classicHymnCount.asStateFlow()
+
     private var lastReadJob: Job? = null
     private var bookmarkJob: Job? = null
     private var conferenceJob: Job? = null
+    private var hymnsJob: Job? = null
     private var hasSyncedOnLaunch = false
 
     override fun onScreenShow(screen: SimpleLightScreen<Unit>) {
         super.onScreenShow(screen)
         repository.ensureConferenceAssetLoaded()
+        repository.ensureHymnsLoaded()
 
         lastReadJob?.cancel()
         lastReadJob = viewModelScope.launch {
@@ -97,6 +107,16 @@ class HomeScreenViewModel(
             }
         }
 
+        hymnsJob?.cancel()
+        hymnsJob = viewModelScope.launch {
+            repository.syncedHymns.collect { synced ->
+                val hcCount = HymnsData.getHymnsForBook(HymnBook.HOME_AND_CHURCH, synced).size
+                val classicCount = HymnsData.getHymnsForBook(HymnBook.CLASSIC_1985, synced).size
+                if (hcCount > 0) _homeAndChurchHymnCount.value = hcCount
+                if (classicCount > 0) _classicHymnCount.value = classicCount
+            }
+        }
+
         if (!hasSyncedOnLaunch) {
             hasSyncedOnLaunch = true
             viewModelScope.launch {
@@ -118,7 +138,11 @@ class HomeScreen(
                 GospelDatabase::class.java,
                 GospelRepository.DATABASE_NAME
             ) {
-                addMigrations(GospelDatabase.MIGRATION_2_3, GospelDatabase.MIGRATION_3_4)
+                addMigrations(
+                    GospelDatabase.MIGRATION_2_3,
+                    GospelDatabase.MIGRATION_3_4,
+                    GospelDatabase.MIGRATION_4_5,
+                )
                 fallbackToDestructiveMigration()
             }
         },
@@ -139,6 +163,8 @@ class HomeScreen(
         val bookmarkCount by viewModel.bookmarkCount.collectAsState()
         val latestConferenceTitle by viewModel.latestConferenceTitle.collectAsState()
         val latestConferenceSubtitle by viewModel.latestConferenceSubtitle.collectAsState()
+        val homeAndChurchHymnCount by viewModel.homeAndChurchHymnCount.collectAsState()
+        val classicHymnCount by viewModel.classicHymnCount.collectAsState()
 
         LightTheme(colors = themeColors) {
             Box(
@@ -319,7 +345,61 @@ class HomeScreen(
                             )
                         }
 
-                        Spacer(modifier = Modifier.height(8.dp))
+                        Spacer(modifier = Modifier.height(20.dp))
+
+                        // Hymns Section (Both New & Classic Hymnbooks)
+                        LightText(
+                            text = "HYMNS",
+                            variant = LightTextVariant.Detail,
+                            lighten = true,
+                            modifier = Modifier.padding(bottom = 6.dp)
+                        )
+
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = 8.dp)
+                                .lightClickable {
+                                    navigateTo(screenFactory = { act ->
+                                        HymnListScreen(act, HymnBook.HOME_AND_CHURCH.id)
+                                    })
+                                }
+                        ) {
+                            LightText(
+                                text = HymnBook.HOME_AND_CHURCH.title,
+                                variant = LightTextVariant.Subheading
+                            )
+                            LightText(
+                                text = "$homeAndChurchHymnCount hymns • Tap to read or update",
+                                variant = LightTextVariant.Detail,
+                                lighten = true,
+                                modifier = Modifier.padding(top = 2.dp)
+                            )
+                        }
+
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = 8.dp)
+                                .lightClickable {
+                                    navigateTo(screenFactory = { act ->
+                                        HymnListScreen(act, HymnBook.CLASSIC_1985.id)
+                                    })
+                                }
+                        ) {
+                            LightText(
+                                text = HymnBook.CLASSIC_1985.title,
+                                variant = LightTextVariant.Subheading
+                            )
+                            LightText(
+                                text = "$classicHymnCount hymns • Complete classic hymnbook",
+                                variant = LightTextVariant.Detail,
+                                lighten = true,
+                                modifier = Modifier.padding(top = 2.dp)
+                            )
+                        }
+
+                        Spacer(modifier = Modifier.height(12.dp))
                     }
                 }
             }

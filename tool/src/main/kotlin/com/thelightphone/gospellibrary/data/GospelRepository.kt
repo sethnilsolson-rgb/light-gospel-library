@@ -5,12 +5,15 @@ import com.thelightphone.gospellibrary.db.ConferenceTalkEntity
 import com.thelightphone.gospellibrary.db.DownloadedLanguageEntity
 import com.thelightphone.gospellibrary.db.GospelDatabase
 import com.thelightphone.gospellibrary.db.LastReadEntity
+import com.thelightphone.gospellibrary.db.SyncedHymnEntity
 import com.thelightphone.gospellibrary.model.ConferencePeriod
 import com.thelightphone.gospellibrary.model.ConferenceSessionGroup
 import com.thelightphone.gospellibrary.model.ConferenceTalk
 import com.thelightphone.gospellibrary.model.ContentChapter
 import com.thelightphone.gospellibrary.model.ContentVerse
 import com.thelightphone.gospellibrary.model.GospelLanguage
+import com.thelightphone.gospellibrary.model.HymnBook
+import com.thelightphone.gospellibrary.model.HymnItem
 import com.thelightphone.gospellibrary.model.ReaderFontSize
 import com.thelightphone.gospellibrary.model.ReaderPageMode
 import com.thelightphone.gospellibrary.model.WordLookupResult
@@ -35,6 +38,11 @@ data class ConferenceSyncStatus(
     val downloadedNew: Boolean,
 )
 
+data class HymnSyncStatus(
+    val message: String,
+    val downloadedCount: Int,
+)
+
 class GospelRepository(
     private val database: GospelDatabase,
     var assetStreamProvider: ((String) -> InputStream?)? = null,
@@ -48,6 +56,7 @@ class GospelRepository(
 
     init {
         GeneralConferenceData.ensureBundledLoaded(assetStreamProvider)
+        HymnsData.ensureBundledLoaded(assetStreamProvider)
         loadReaderPrefsFromDisk()
     }
 
@@ -103,6 +112,7 @@ class GospelRepository(
     val bookmarkCount: Flow<Int> = database.bookmarkDao().getBookmarkCount()
     val lastRead: Flow<LastReadEntity?> = database.lastReadDao().getLastRead()
     val conferenceTalks: Flow<List<ConferenceTalkEntity>> = database.conferenceTalkDao().getAllTalks()
+    val syncedHymns: Flow<List<SyncedHymnEntity>> = database.hymnDao().getAllSyncedHymns()
     val downloadedLanguages: Flow<List<DownloadedLanguageEntity>> =
         database.languageDao().getDownloadedLanguages()
 
@@ -112,6 +122,10 @@ class GospelRepository(
 
     fun ensureConferenceAssetLoaded() {
         GeneralConferenceData.ensureBundledLoaded(assetStreamProvider)
+    }
+
+    fun ensureHymnsLoaded() {
+        HymnsData.ensureBundledLoaded(assetStreamProvider)
     }
 
     fun isChapterBookmarked(contentId: String): Flow<Boolean> =
@@ -445,6 +459,44 @@ class GospelRepository(
         )
     }
 
+    suspend fun getHymnsForBook(book: HymnBook): List<HymnItem> = withContext(Dispatchers.IO) {
+        ensureHymnsLoaded()
+        val synced = database.hymnDao().getAllSyncedHymnsSync()
+        HymnsData.getHymnsForBook(book, synced)
+    }
+
+    suspend fun syncHomeAndChurchHymns(): HymnSyncStatus = withContext(Dispatchers.IO) {
+        ensureHymnsLoaded()
+        val currentSynced = database.hymnDao().getAllSyncedHymnsSync()
+        val existingHymns = HymnsData.getHymnsForBook(HymnBook.HOME_AND_CHURCH, currentSynced)
+        val existingSlugs = existingHymns.mapNotNull { it.slug.takeIf(String::isNotBlank) }.toSet()
+        val existingNumbers = existingHymns.map { it.number }.toSet()
+
+        val result = HymnSyncService.fetchNewHomeAndChurchHymns(
+            existingSlugs = existingSlugs,
+            existingNumbers = existingNumbers,
+        )
+        if (result.downloadedHymns.isNotEmpty()) {
+            database.hymnDao().insertHymns(result.downloadedHymns)
+            val total = existingHymns.size + result.downloadedHymns.size
+            val n = result.downloadedHymns.size
+            return@withContext HymnSyncStatus(
+                message = "Downloaded $n new ${if (n == 1) "hymn" else "hymns"} ($total total)",
+                downloadedCount = n,
+            )
+        }
+        if (result.hadNetworkError) {
+            return@withContext HymnSyncStatus(
+                message = "Unable to connect. Check internet and try again.",
+                downloadedCount = 0,
+            )
+        }
+        HymnSyncStatus(
+            message = "Up to date (${existingHymns.size} hymns)",
+            downloadedCount = 0,
+        )
+    }
+
     suspend fun getConferencePeriods(langCode: String = GospelLanguage.ENG.code): List<ConferencePeriod> =
         withContext(Dispatchers.IO) {
             ensureConferenceAssetLoaded()
@@ -625,6 +677,13 @@ class GospelRepository(
                 }
                 GeneralConferenceData.getTalkContent(contentId, dbTalks)
             }
+            contentId.startsWith("hymn/") -> {
+                ensureHymnsLoaded()
+                val synced = runBlocking {
+                    database.hymnDao().getAllSyncedHymnsSync()
+                }
+                HymnsData.getHymnContent(contentId, synced)
+            }
             else -> null
         }
     }
@@ -635,6 +694,7 @@ class GospelRepository(
         isCancelled: () -> Boolean = { false },
     ): GospelSearchResponse = withContext(Dispatchers.IO) {
         ensureConferenceAssetLoaded()
+        ensureHymnsLoaded()
         val dbTalks = database.conferenceTalkDao().getAllTalksSync()
         val mergedById = LinkedHashMap<String, ConferenceTalkEntity>()
         GeneralConferenceData.getBundledTalkEntities().forEach { mergedById[it.talkId] = it }
@@ -642,11 +702,15 @@ class GospelRepository(
             .filter { it.periodId >= "2026-10" && !it.talkId.contains("2024-10") }
             .forEach { mergedById[it.talkId] = it }
 
+        val syncedHymns = database.hymnDao().getAllSyncedHymnsSync()
+        val allHymns = HymnsData.getAllMergedHymns(syncedHymns)
+
         GospelSearchEngine.search(
             rawQuery = query,
             scope = scope,
             assetStreamProvider = assetStreamProvider,
             conferenceTalks = mergedById.values.toList(),
+            hymns = allHymns,
             isCancelled = isCancelled,
         )
     }
@@ -670,6 +734,7 @@ class GospelRepository(
                 if (assetStreamProvider != null && this.assetStreamProvider == null) {
                     this.assetStreamProvider = assetStreamProvider
                     ensureConferenceAssetLoaded()
+                    ensureHymnsLoaded()
                 }
                 if (filesDir != null) {
                     attachFilesDir(filesDir)

@@ -3,7 +3,48 @@ package com.thelightphone.gospellibrary.model
 enum class ContentType {
     SCRIPTURE,
     GENERAL_CONFERENCE,
+    HYMN,
 }
+
+enum class HymnBook(
+    val id: String,
+    val title: String,
+    val shortTitle: String,
+    val assetPath: String,
+    val supportsSync: Boolean,
+) {
+    HOME_AND_CHURCH(
+        id = "home-and-church",
+        title = "Hymns—For Home and Church",
+        shortTitle = "Home & Church",
+        assetPath = "hymns/hymns-home-and-church.bin",
+        supportsSync = true,
+    ),
+    CLASSIC_1985(
+        id = "1985",
+        title = "Hymns (1985)",
+        shortTitle = "Classic (1985)",
+        assetPath = "hymns/hymns-1985.bin",
+        supportsSync = false,
+    );
+
+    companion object {
+        fun fromId(id: String?): HymnBook =
+            entries.firstOrNull { it.id.equals(id, ignoreCase = true) } ?: HOME_AND_CHURCH
+    }
+}
+
+data class HymnItem(
+    val id: String,
+    val bookId: String,
+    val number: Int,
+    val slug: String,
+    val uri: String,
+    val title: String,
+    val topic: String,
+    val stanzas: List<String>,
+    val credits: String = "",
+)
 
 enum class GospelLanguage(
     val code: String,

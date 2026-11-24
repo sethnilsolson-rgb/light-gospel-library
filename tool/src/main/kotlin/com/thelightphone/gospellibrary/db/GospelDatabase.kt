@@ -15,8 +15,9 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         TranslatedChapterEntity::class,
         TranslatedConferenceTalkEntity::class,
         LanguageDictEntryEntity::class,
+        SyncedHymnEntity::class,
     ],
-    version = 4,
+    version = 5,
     exportSchema = false,
 )
 abstract class GospelDatabase : RoomDatabase() {
@@ -26,6 +27,7 @@ abstract class GospelDatabase : RoomDatabase() {
     abstract fun conferenceTalkDao(): ConferenceTalkDao
     abstract fun languageDao(): LanguageDao
     abstract fun languageDictionaryDao(): LanguageDictionaryDao
+    abstract fun hymnDao(): HymnDao
 
     companion object {
         val MIGRATION_2_3 = object : Migration(2, 3) {
@@ -105,6 +107,28 @@ abstract class GospelDatabase : RoomDatabase() {
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL("ALTER TABLE `bookmarks` ADD COLUMN `scrollPermille` INTEGER NOT NULL DEFAULT 0")
                 db.execSQL("ALTER TABLE `last_read` ADD COLUMN `scrollPermille` INTEGER NOT NULL DEFAULT 0")
+            }
+        }
+
+        val MIGRATION_4_5 = object : Migration(4, 5) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `synced_hymns` (
+                        `id` TEXT NOT NULL,
+                        `bookId` TEXT NOT NULL,
+                        `number` INTEGER NOT NULL,
+                        `slug` TEXT NOT NULL,
+                        `uri` TEXT NOT NULL,
+                        `title` TEXT NOT NULL,
+                        `topic` TEXT NOT NULL,
+                        `stanzasEncoded` TEXT NOT NULL,
+                        `credits` TEXT NOT NULL,
+                        `updatedAt` INTEGER NOT NULL,
+                        PRIMARY KEY(`id`)
+                    )
+                    """.trimIndent()
+                )
             }
         }
     }

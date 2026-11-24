@@ -164,7 +164,11 @@ class ConferenceListScreen(
                 GospelDatabase::class.java,
                 GospelRepository.DATABASE_NAME
             ) {
-                addMigrations(GospelDatabase.MIGRATION_2_3, GospelDatabase.MIGRATION_3_4)
+                addMigrations(
+                    GospelDatabase.MIGRATION_2_3,
+                    GospelDatabase.MIGRATION_3_4,
+                    GospelDatabase.MIGRATION_4_5,
+                )
                 fallbackToDestructiveMigration()
             }
         },

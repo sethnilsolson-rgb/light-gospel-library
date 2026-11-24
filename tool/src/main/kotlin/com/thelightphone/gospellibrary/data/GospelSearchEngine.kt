@@ -1,6 +1,8 @@
 package com.thelightphone.gospellibrary.data
 
 import com.thelightphone.gospellibrary.db.ConferenceTalkEntity
+import com.thelightphone.gospellibrary.model.HymnBook
+import com.thelightphone.gospellibrary.model.HymnItem
 import com.thelightphone.gospellibrary.model.ScriptureBook
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
@@ -18,6 +20,7 @@ enum class SearchScope(val label: String) {
     DC("D&C"),
     PGP("PGP"),
     CONFERENCE("Conf."),
+    HYMNS("Hymns"),
 }
 
 enum class SearchMatchKind(val badge: String) {
@@ -691,10 +694,12 @@ object GospelSearchEngine {
         scope: SearchScope,
         assetStreamProvider: ((String) -> InputStream?)?,
         conferenceTalks: List<ConferenceTalkEntity>,
+        hymns: List<HymnItem> = emptyList(),
         isCancelled: () -> Boolean = { false },
     ): GospelSearchResponse {
         val query = rawQuery.trim()
-        if (query.length < 2) {
+        val hymnNumJump = parseHymnNumberQuery(query)
+        if (query.length < 2 && hymnNumJump == null) {
             return GospelSearchResponse(query = query, matchedTopics = emptyList(), results = emptyList())
         }
 
@@ -762,6 +767,24 @@ object GospelSearchEngine {
             )
         }
 
+        // 1b. Direct Hymn Number Jump (e.g. "1001", "#2", "hymn 193")
+        if (hymnNumJump != null && (scope == SearchScope.ALL || scope == SearchScope.HYMNS) && hymns.isNotEmpty()) {
+            hymns.filter { it.number == hymnNumJump }.forEach { hymn ->
+                val book = HymnBook.fromId(hymn.bookId)
+                allResults.add(
+                    GospelSearchResult(
+                        contentId = hymn.id,
+                        title = "#${hymn.number} ${hymn.title}",
+                        subtitle = "${book.shortTitle}${if (hymn.topic.isNotBlank()) " • ${hymn.topic}" else ""}",
+                        snippet = hymn.stanzas.firstOrNull()?.replace("\n", " ")?.take(160) ?: hymn.title,
+                        matchKind = SearchMatchKind.REFERENCE,
+                        scrollPermille = 0,
+                        score = 960f,
+                    )
+                )
+            }
+        }
+
         // 2. Search Standard Works (streaming JSON so memory stays tiny)
         val volumesToSearch = when (scope) {
             SearchScope.ALL -> listOf("bofm", "nt", "dc", "pgp", "ot")
@@ -770,7 +793,7 @@ object GospelSearchEngine {
             SearchScope.OT -> listOf("ot")
             SearchScope.DC -> listOf("dc")
             SearchScope.PGP -> listOf("pgp")
-            SearchScope.CONFERENCE -> emptyList()
+            SearchScope.CONFERENCE, SearchScope.HYMNS -> emptyList()
         }
 
         val directCandidates = ArrayList<GospelSearchResult>(64)
@@ -805,6 +828,18 @@ object GospelSearchEngine {
                 conceptTerms = conceptTerms,
                 directOut = directCandidates,
                 conceptOut = conceptCandidates,
+                isCancelled = isCancelled,
+            )
+        }
+
+        // 4. Search Hymns (Home & Church + Classic 1985)
+        if ((scope == SearchScope.ALL || scope == SearchScope.HYMNS) && hymns.isNotEmpty() && !isCancelled()) {
+            searchHymns(
+                hymns = hymns,
+                queryLower = queryLower,
+                meaningfulTokens = meaningfulTokens,
+                queryStems = queryStems,
+                directOut = directCandidates,
                 isCancelled = isCancelled,
             )
         }
@@ -1268,6 +1303,96 @@ object GospelSearchEngine {
                         topicLabel = bestConceptTopic,
                         scrollPermille = bestConceptPermille,
                         score = bestConceptScore,
+                    )
+                )
+            }
+        }
+    }
+
+    internal fun parseHymnNumberQuery(query: String): Int? {
+        val m = Regex("""^(?:hymn\s*#?|#)?\s*(\d{1,4})$""", RegexOption.IGNORE_CASE).matchEntire(query.trim())
+            ?: return null
+        return m.groupValues[1].toIntOrNull()?.takeIf { it in 1..2999 }
+    }
+
+    private fun searchHymns(
+        hymns: List<HymnItem>,
+        queryLower: String,
+        meaningfulTokens: List<String>,
+        queryStems: List<String>,
+        directOut: MutableList<GospelSearchResult>,
+        isCancelled: () -> Boolean,
+    ) {
+        if (meaningfulTokens.isEmpty()) return
+        val hasPhraseQuery = meaningfulTokens.size >= 2
+        val minRequired = when {
+            meaningfulTokens.size <= 1 -> 1
+            meaningfulTokens.size == 2 -> 2
+            else -> max(2, (meaningfulTokens.size * 0.6f).toInt())
+        }
+
+        for (hymn in hymns) {
+            if (isCancelled()) break
+            val titleLower = "${hymn.number} ${hymn.title} ${hymn.topic}".lowercase(Locale.US)
+            val titleExact = queryLower.length >= 3 && titleLower.contains(queryLower)
+            val titleWords = tokenize(titleLower)
+            val titleStems = titleWords.mapTo(HashSet()) { stemWord(it) }
+            val titleHits = meaningfulTokens.count { tok ->
+                val st = stemWord(tok)
+                tok in titleWords || (st.length >= 3 && st in titleStems)
+            }
+
+            var bestScore = 0f
+            var bestKind = SearchMatchKind.WORDS
+            var bestSnippet = hymn.stanzas.firstOrNull()?.replace("\n", " ")?.take(160) ?: hymn.title
+
+            if (titleExact || titleHits >= minRequired) {
+                bestScore = (if (titleExact) 145f else 90f) + titleHits * 12f
+                bestKind = if (titleExact && hasPhraseQuery) SearchMatchKind.EXACT else SearchMatchKind.WORDS
+            }
+
+            for (stanza in hymn.stanzas) {
+                val sLower = stanza.lowercase(Locale.US)
+                val exactHit = queryLower.length >= 3 && sLower.contains(queryLower)
+                var quickHit = exactHit
+                if (!quickHit) {
+                    for (st in queryStems) {
+                        if (st.length >= 3 && sLower.contains(st)) {
+                            quickHit = true
+                            break
+                        }
+                    }
+                }
+                if (!quickHit) continue
+
+                val sWords = tokenize(sLower)
+                val sStems = sWords.mapTo(HashSet(sWords.size)) { stemWord(it) }
+                val hits = meaningfulTokens.count { tok ->
+                    val st = stemWord(tok)
+                    tok in sWords || (st.length >= 3 && st in sStems)
+                }
+                if (exactHit || hits >= minRequired) {
+                    val coverage = hits.toFloat() / max(1, meaningfulTokens.size).toFloat()
+                    val sc = (if (exactHit) 118f else 0f) + coverage * 62f + hits * 8f + titleHits * 14f
+                    if (sc > bestScore) {
+                        bestScore = sc
+                        bestKind = if (exactHit && hasPhraseQuery) SearchMatchKind.EXACT else SearchMatchKind.WORDS
+                        bestSnippet = buildSnippet(stanza.replace("\n", " / "), if (exactHit) queryLower else meaningfulTokens.first())
+                    }
+                }
+            }
+
+            if (bestScore > 0f) {
+                val book = HymnBook.fromId(hymn.bookId)
+                directOut.add(
+                    GospelSearchResult(
+                        contentId = hymn.id,
+                        title = "#${hymn.number} ${hymn.title}",
+                        subtitle = "${book.shortTitle}${if (hymn.topic.isNotBlank()) " • ${hymn.topic}" else ""}",
+                        snippet = bestSnippet,
+                        matchKind = bestKind,
+                        scrollPermille = 0,
+                        score = bestScore,
                     )
                 )
             }

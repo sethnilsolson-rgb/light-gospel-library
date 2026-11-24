@@ -112,3 +112,18 @@ data class LanguageDictEntryEntity(
     val reading: String = "",
     val definition: String,
 )
+
+@Entity(tableName = "synced_hymns")
+data class SyncedHymnEntity(
+    @PrimaryKey
+    val id: String,
+    val bookId: String,
+    val number: Int,
+    val slug: String,
+    val uri: String,
+    val title: String,
+    val topic: String,
+    val stanzasEncoded: String,
+    val credits: String,
+    val updatedAt: Long = System.currentTimeMillis(),
+)
