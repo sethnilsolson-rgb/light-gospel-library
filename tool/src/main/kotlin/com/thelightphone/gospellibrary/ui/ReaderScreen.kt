@@ -90,6 +90,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
@@ -380,7 +381,7 @@ class ReaderViewModel(
 
         scrollSaveJob?.cancel()
         scrollSaveJob = viewModelScope.launch {
-            delay(400L)
+            delay(800L)
             repository.updateLastReadScroll(renderedChapterId, clamped)
         }
     }
@@ -607,6 +608,22 @@ class ReaderScreen(
 ) : LightScreen<Unit, ReaderViewModel>(sealedActivity) {
 
     private val vibrator = sealedActivity.vibrator
+    private val isForegroundFlow = MutableStateFlow(true)
+
+    override fun willShow() {
+        super.willShow()
+        isForegroundFlow.value = true
+    }
+
+    override fun willHide() {
+        isForegroundFlow.value = false
+        super.willHide()
+    }
+
+    override fun onAppPause() {
+        isForegroundFlow.value = false
+        super.onAppPause()
+    }
 
     private val repository = GospelRepository.getInstance(
         dbProvider = {
@@ -637,6 +654,7 @@ class ReaderScreen(
     @Composable
     override fun Content() {
         val themeColors by LightThemeController.colors.collectAsState()
+        val isForeground by isForegroundFlow.collectAsState()
         val chapter by viewModel.chapter.collectAsState()
         val chapterBookmarks by viewModel.chapterBookmarks.collectAsState()
         val chapterNotes by viewModel.chapterNotes.collectAsState()
@@ -782,13 +800,16 @@ class ReaderScreen(
         LaunchedEffect(scrollState, chapter?.id, pageMode) {
             if (pageMode != ReaderPageMode.SCROLL) return@LaunchedEffect
             val renderedChapterId = chapter?.id ?: return@LaunchedEffect
-            snapshotFlow { scrollState.value to scrollState.maxValue }
-                .collect { (value, maxVal) ->
-                    val permille = if (maxVal > 0) {
-                        ((value.toLong() * 1000L) / maxVal.toLong()).toInt().coerceIn(0, 1000)
-                    } else {
-                        0
-                    }
+            snapshotFlow {
+                val maxVal = scrollState.maxValue
+                if (maxVal > 0) {
+                    ((scrollState.value.toLong() * 1000L) / maxVal.toLong()).toInt().coerceIn(0, 1000)
+                } else {
+                    0
+                }
+            }
+                .distinctUntilChanged()
+                .collect { permille ->
                     viewModel.onScrollPositionChanged(renderedChapterId, permille)
                 }
         }
@@ -862,6 +883,7 @@ class ReaderScreen(
                         null
                     },
                     editorKey = activeComposing.existingNote?.id ?: activeComposing.quotedExcerpt,
+                    isForeground = isForeground,
                 )
                 return@LightTheme
             }
@@ -927,7 +949,7 @@ class ReaderScreen(
                                 .fillMaxWidth()
                                 .padding(bottom = 0.5f.gridUnitsAsDp())
                         ) {
-                            LightTopBar(
+                            BatteryTopBar(
                                 leftButton = LightBarButton.LightIcon(
                                     icon = LightIcons.BACK,
                                     onClick = { goBack() }
@@ -967,6 +989,9 @@ class ReaderScreen(
                                         }
                                     }
                                 ),
+                                isForeground = isForeground,
+                                centerTitleForMeasure = chapter?.title ?: "Reader",
+                                centerExtraWidthDp = if (showLanguageToggle) 44.dp else 0.dp,
                             )
 
                             if (showLanguageToggle) {

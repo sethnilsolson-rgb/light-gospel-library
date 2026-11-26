@@ -55,7 +55,7 @@ class ChapterPickerScreen(
             ) {
                 Column(modifier = Modifier.fillMaxSize()) {
                     val screenTitle = if (book.volumeId == "dc") "Doctrine & Covenants" else book.shortTitle
-                    LightTopBar(
+                    BatteryTopBar(
                         leftButton = LightBarButton.LightIcon(
                             icon = LightIcons.BACK,
                             onClick = { goBack() }

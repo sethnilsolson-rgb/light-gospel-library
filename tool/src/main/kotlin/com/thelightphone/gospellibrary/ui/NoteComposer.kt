@@ -252,6 +252,7 @@ fun ReaderNoteComposer(
     onBack: () -> Unit,
     onDelete: (() -> Unit)? = null,
     editorKey: Any = "reader-note",
+    isForeground: Boolean = true,
 ) {
     val colors = LightThemeTokens.colors
     val content = colors.content
@@ -273,8 +274,9 @@ fun ReaderNoteComposer(
     var viewportHeightPx by remember { mutableIntStateOf(0) }
     var cursorVisible by remember { mutableStateOf(true) }
 
-    LaunchedEffect(textStr, cursorIndex) {
+    LaunchedEffect(textStr, cursorIndex, isForeground) {
         cursorVisible = true
+        if (!isForeground) return@LaunchedEffect
         while (true) {
             delay(550L)
             cursorVisible = !cursorVisible

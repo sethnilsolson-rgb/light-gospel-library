@@ -188,7 +188,7 @@ class HomeScreen(
             ) {
                 Column(modifier = Modifier.fillMaxSize()) {
                     // Minimal Top Bar with Search (left) & Settings (right)
-                    LightTopBar(
+                    BatteryTopBar(
                         leftButton = LightBarButton.LightIcon(
                             icon = LightIcons.SEARCH,
                             contentDescription = "Search",

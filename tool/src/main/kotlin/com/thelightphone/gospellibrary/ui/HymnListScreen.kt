@@ -225,7 +225,7 @@ class HymnListScreen(
                             .fillMaxSize()
                             .swipeToBack { goBack() }
                     ) {
-                        LightTopBar(
+                        BatteryTopBar(
                             leftButton = LightBarButton.LightIcon(
                                 icon = LightIcons.BACK,
                                 onClick = { goBack() },

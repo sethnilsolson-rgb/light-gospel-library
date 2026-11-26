@@ -220,7 +220,7 @@ class ConferenceListScreen(
                             .fillMaxWidth()
                             .padding(bottom = 0.5f.gridUnitsAsDp())
                     ) {
-                        LightTopBar(
+                        BatteryTopBar(
                             leftButton = LightBarButton.LightIcon(
                                 icon = LightIcons.BACK,
                                 onClick = { goBack() }
@@ -229,7 +229,9 @@ class ConferenceListScreen(
                                 null
                             } else {
                                 LightTopBarCenter.Text(conference?.name ?: "General Conference")
-                            }
+                            },
+                            centerTitleForMeasure = conference?.name ?: "General Conference",
+                            centerExtraWidthDp = if (showLanguageToggle) 44.dp else 0.dp,
                         )
 
                         if (showLanguageToggle) {
