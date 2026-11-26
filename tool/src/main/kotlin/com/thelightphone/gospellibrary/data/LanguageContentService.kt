@@ -4,6 +4,7 @@ import com.thelightphone.gospellibrary.db.TranslatedChapterEntity
 import com.thelightphone.gospellibrary.db.TranslatedConferenceTalkEntity
 import com.thelightphone.gospellibrary.model.ContentVerse
 import com.thelightphone.gospellibrary.model.GospelLanguage
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -13,6 +14,7 @@ import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import java.net.HttpURLConnection
 import java.net.URI
+import java.util.concurrent.atomic.AtomicInteger
 
 object LanguageContentService {
 
@@ -54,18 +56,23 @@ object LanguageContentService {
         bookId: String,
         chapterNum: Int,
     ): Result<TranslatedChapterEntity> = withContext(Dispatchers.IO) {
-        runCatching {
+        try {
             val uriPath = buildChurchOrgScriptureUri(volumeId, bookId, chapterNum)
             val apiJson = fetchApiPage(langCode, uriPath)
             val body = ConferenceSyncService.extractContentBody(apiJson)
             val metaTitle = ConferenceSyncService.extractMetaTitle(apiJson)
             val contentId = "scripture/$volumeId/$bookId/$chapterNum"
-            parseScriptureChapterHtml(
+            val parsed = parseScriptureChapterHtml(
                 langCode = langCode,
                 contentId = contentId,
                 htmlBody = body,
                 fallbackTitle = metaTitle,
             ) ?: error("No verses parsed for $uriPath ($langCode)")
+            Result.success(parsed)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Result.failure(e)
         }
     }
 
@@ -73,7 +80,7 @@ object LanguageContentService {
         langCode: String,
         talkId: String,
     ): Result<TranslatedChapterEntity> = withContext(Dispatchers.IO) {
-        runCatching {
+        try {
             // talkId format: "gc/2026-10/12gong"
             val parts = talkId.split("/")
             require(parts.size == 3 && parts[0] == "gc") { "Invalid talkId: $talkId" }
@@ -114,14 +121,20 @@ object LanguageContentService {
                 append(lang.nativeName)
             }
 
-            TranslatedChapterEntity(
-                cacheKey = "$langCode|$talkId",
-                langCode = langCode,
-                contentId = talkId,
-                title = parsed.title,
-                subtitle = subtitle,
-                versesEncoded = encodeVerses(verses),
+            Result.success(
+                TranslatedChapterEntity(
+                    cacheKey = "$langCode|$talkId",
+                    langCode = langCode,
+                    contentId = talkId,
+                    title = parsed.title,
+                    subtitle = subtitle,
+                    versesEncoded = encodeVerses(verses),
+                )
             )
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Result.failure(e)
         }
     }
 
@@ -131,7 +144,7 @@ object LanguageContentService {
         monthNum: Int = 10,
         onProgress: ((String) -> Unit)? = null,
     ): Result<List<TranslatedConferenceTalkEntity>> = withContext(Dispatchers.IO) {
-        runCatching {
+        try {
             val monthStr = "%02d".format(monthNum)
             val periodId = "$year-$monthStr"
             val manifestJson = fetchApiPage(langCode, "/general-conference/$year/$monthStr")
@@ -141,7 +154,7 @@ object LanguageContentService {
 
             val sessions = ConferenceSyncService.parseChurchOrgManifest(manifestBody, year, monthStr)
             val total = sessions.sumOf { it.talkUris.size }
-            var completed = 0
+            val completed = AtomicInteger(0)
             val semaphore = Semaphore(4)
             val results = mutableListOf<TranslatedConferenceTalkEntity>()
 
@@ -150,7 +163,7 @@ object LanguageContentService {
                     session.talkUris.mapIndexed { tIdx, talkUri ->
                         async(Dispatchers.IO) {
                             semaphore.withPermit {
-                                runCatching {
+                                try {
                                     val talkJson = fetchApiPage(langCode, talkUri)
                                     val talkBody = ConferenceSyncService.extractContentBody(talkJson)
                                     val metaTitle = ConferenceSyncService.extractMetaTitle(talkJson)
@@ -166,8 +179,8 @@ object LanguageContentService {
                                         sessionOrder = sIdx,
                                         talkOrder = tIdx,
                                     )
-                                    completed++
-                                    onProgress?.invoke("Conference talks: $completed / $total")
+                                    val done = completed.incrementAndGet()
+                                    onProgress?.invoke("Conference talks: $done / $total")
                                     base?.let { b ->
                                         TranslatedConferenceTalkEntity(
                                             compositeId = "$langCode|${b.talkId}",
@@ -187,14 +200,22 @@ object LanguageContentService {
                                             paragraphs = b.paragraphs,
                                         )
                                     }
-                                }.getOrNull()
+                                } catch (e: CancellationException) {
+                                    throw e
+                                } catch (_: Exception) {
+                                    null
+                                }
                             }
                         }
                     }.awaitAll().filterNotNull()
                 }
                 results.addAll(talks)
             }
-            results
+            Result.success(results)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Result.failure(e)
         }
     }
 

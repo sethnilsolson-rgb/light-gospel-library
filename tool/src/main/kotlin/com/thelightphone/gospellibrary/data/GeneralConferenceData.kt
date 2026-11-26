@@ -21,9 +21,9 @@ object GeneralConferenceData {
      */
     fun ensureBundledLoaded(assetStreamProvider: ((String) -> InputStream?)?): List<ConferenceTalkEntity> {
         if (bundledEntities.isNotEmpty()) return bundledEntities
-        val stream = assetStreamProvider?.invoke(BUNDLED_CONFERENCE_ASSET) ?: return bundledEntities
         return synchronized(this) {
             if (bundledEntities.isEmpty()) {
+                val stream = assetStreamProvider?.invoke(BUNDLED_CONFERENCE_ASSET) ?: return@synchronized bundledEntities
                 val jsonText = stream.bufferedReader(Charsets.UTF_8).use { it.readText() }
                 bundledEntities = ConferenceSyncService.parseConferenceJson(jsonText)
             }

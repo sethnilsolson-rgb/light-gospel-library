@@ -171,6 +171,7 @@ class HymnListScreen(
                     GospelDatabase.MIGRATION_2_3,
                     GospelDatabase.MIGRATION_3_4,
                     GospelDatabase.MIGRATION_4_5,
+                    GospelDatabase.MIGRATION_5_6,
                 )
                 fallbackToDestructiveMigration()
             }

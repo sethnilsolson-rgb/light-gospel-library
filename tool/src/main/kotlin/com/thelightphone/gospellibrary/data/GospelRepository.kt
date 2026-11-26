@@ -5,6 +5,7 @@ import com.thelightphone.gospellibrary.db.ConferenceTalkEntity
 import com.thelightphone.gospellibrary.db.DownloadedLanguageEntity
 import com.thelightphone.gospellibrary.db.GospelDatabase
 import com.thelightphone.gospellibrary.db.LastReadEntity
+import com.thelightphone.gospellibrary.db.NoteEntity
 import com.thelightphone.gospellibrary.db.SyncedHymnEntity
 import com.thelightphone.gospellibrary.model.ConferencePeriod
 import com.thelightphone.gospellibrary.model.ConferenceSessionGroup
@@ -17,7 +18,10 @@ import com.thelightphone.gospellibrary.model.HymnItem
 import com.thelightphone.gospellibrary.model.ReaderFontSize
 import com.thelightphone.gospellibrary.model.ReaderPageMode
 import com.thelightphone.gospellibrary.model.WordLookupResult
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
@@ -26,12 +30,15 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.map
-import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.io.IOException
 import java.io.InputStream
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 
 data class ConferenceSyncStatus(
     val message: String,
@@ -48,6 +55,11 @@ class GospelRepository(
     var assetStreamProvider: ((String) -> InputStream?)? = null,
     private var appFilesDir: File? = null,
 ) {
+    private val ioScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val prefsLock = Any()
+    private val userModifiedPageMode = AtomicBoolean(false)
+    private val userModifiedFontSize = AtomicBoolean(false)
+
     private val _pageMode = MutableStateFlow(ReaderPageMode.SCROLL)
     val pageMode: StateFlow<ReaderPageMode> = _pageMode.asStateFlow()
 
@@ -55,15 +67,19 @@ class GospelRepository(
     val fontSize: StateFlow<ReaderFontSize> = _fontSize.asStateFlow()
 
     init {
-        GeneralConferenceData.ensureBundledLoaded(assetStreamProvider)
-        HymnsData.ensureBundledLoaded(assetStreamProvider)
-        loadReaderPrefsFromDisk()
+        ioScope.launch {
+            GeneralConferenceData.ensureBundledLoaded(assetStreamProvider)
+            HymnsData.ensureBundledLoaded(assetStreamProvider)
+            loadReaderPrefsFromDisk()
+        }
     }
 
     internal fun attachFilesDir(dir: File?) {
         if (dir != null && appFilesDir == null) {
             appFilesDir = dir
-            loadReaderPrefsFromDisk()
+            ioScope.launch {
+                loadReaderPrefsFromDisk()
+            }
         }
     }
 
@@ -71,45 +87,59 @@ class GospelRepository(
 
     private fun loadReaderPrefsFromDisk() {
         val file = prefsFile() ?: return
-        if (!file.isFile) return
-        runCatching {
-            file.readLines(Charsets.UTF_8).forEach { line ->
-                val idx = line.indexOf('=')
-                if (idx > 0) {
-                    val key = line.substring(0, idx).trim()
-                    val value = line.substring(idx + 1).trim()
-                    when (key) {
-                        "pageMode" -> _pageMode.value = ReaderPageMode.fromName(value)
-                        "fontSize" -> _fontSize.value = ReaderFontSize.fromName(value)
+        synchronized(prefsLock) {
+            if (!file.isFile) return
+            runCatching {
+                file.readLines(Charsets.UTF_8).forEach { line ->
+                    val idx = line.indexOf('=')
+                    if (idx > 0) {
+                        val key = line.substring(0, idx).trim()
+                        val value = line.substring(idx + 1).trim()
+                        when (key) {
+                            "pageMode" -> if (!userModifiedPageMode.get()) {
+                                _pageMode.value = ReaderPageMode.fromName(value)
+                            }
+                            "fontSize" -> if (!userModifiedFontSize.get()) {
+                                _fontSize.value = ReaderFontSize.fromName(value)
+                            }
+                        }
                     }
                 }
             }
         }
     }
 
-    private fun saveReaderPrefsToDisk() {
+    private fun saveReaderPrefsToDisk(mode: ReaderPageMode, size: ReaderFontSize) {
         val file = prefsFile() ?: return
-        runCatching {
-            file.parentFile?.mkdirs()
-            file.writeText(
-                "pageMode=${_pageMode.value.name}\nfontSize=${_fontSize.value.name}\n",
-                Charsets.UTF_8,
-            )
+        synchronized(prefsLock) {
+            runCatching {
+                file.parentFile?.mkdirs()
+                file.writeText(
+                    "pageMode=${mode.name}\nfontSize=${size.name}\n",
+                    Charsets.UTF_8,
+                )
+            }
         }
     }
 
     fun setPageMode(mode: ReaderPageMode) {
+        userModifiedPageMode.set(true)
         _pageMode.value = mode
-        saveReaderPrefsToDisk()
+        val sizeSnapshot = _fontSize.value
+        ioScope.launch { saveReaderPrefsToDisk(mode, sizeSnapshot) }
     }
 
     fun setFontSize(size: ReaderFontSize) {
+        userModifiedFontSize.set(true)
         _fontSize.value = size
-        saveReaderPrefsToDisk()
+        val modeSnapshot = _pageMode.value
+        ioScope.launch { saveReaderPrefsToDisk(modeSnapshot, size) }
     }
 
     val bookmarks: Flow<List<BookmarkEntity>> = database.bookmarkDao().getAllBookmarks()
     val bookmarkCount: Flow<Int> = database.bookmarkDao().getBookmarkCount()
+    val allNotes: Flow<List<NoteEntity>> = database.noteDao().getAllNotes()
+    val noteCount: Flow<Int> = database.noteDao().getNoteCount()
     val lastRead: Flow<LastReadEntity?> = database.lastReadDao().getLastRead()
     val conferenceTalks: Flow<List<ConferenceTalkEntity>> = database.conferenceTalkDao().getAllTalks()
     val syncedHymns: Flow<List<SyncedHymnEntity>> = database.hymnDao().getAllSyncedHymns()
@@ -187,6 +217,21 @@ class GospelRepository(
         database.bookmarkDao().deleteBookmark(bookmark)
     }
 
+    fun getNotesForContent(contentId: String): Flow<List<NoteEntity>> =
+        database.noteDao().getNotesForContent(contentId)
+
+    suspend fun saveNote(note: NoteEntity): Long = withContext(Dispatchers.IO) {
+        database.noteDao().insertNote(note)
+    }
+
+    suspend fun deleteNote(note: NoteEntity) = withContext(Dispatchers.IO) {
+        database.noteDao().deleteNote(note)
+    }
+
+    suspend fun deleteNoteById(id: Long) = withContext(Dispatchers.IO) {
+        database.noteDao().deleteNoteById(id)
+    }
+
     suspend fun cleanupOctober2024() {
         database.bookmarkDao().deleteOctober2024Bookmarks()
         database.highlightDao().deleteOctober2024Highlights()
@@ -234,7 +279,10 @@ class GospelRepository(
         val langEntity = database.languageDao().getLanguageSync(language.code)
         if (language == GospelLanguage.ENG) {
             langEntity?.dictionaryDownloaded == true ||
-                database.languageDictionaryDao().countEntries(language.dictKey) > 100
+                LanguageDictionaryService.isDictionaryComplete(
+                    language.dictKey,
+                    database.languageDictionaryDao(),
+                )
         } else {
             langEntity?.dictionaryDownloaded == true
         }
@@ -280,7 +328,7 @@ class GospelRepository(
         language: GospelLanguage,
         onProgress: (String) -> Unit,
     ): Result<DownloadedLanguageEntity> = withContext(Dispatchers.IO) {
-        runCatching {
+        try {
             // Ensure English base row exists
             val langDao = database.languageDao()
             if (langDao.getLanguageSync("eng") == null) {
@@ -292,7 +340,7 @@ class GospelRepository(
                 language = language,
                 dao = database.languageDictionaryDao(),
                 onProgress = onProgress,
-            ).getOrDefault(0)
+            ).getOrThrow()
 
             // 2. General Conference (Oct 2026) in target language
             onProgress("Downloading October 2026 Conference (${language.nativeName})...")
@@ -301,24 +349,29 @@ class GospelRepository(
                 year = 2026,
                 monthNum = 10,
                 onProgress = onProgress,
-            ).getOrDefault(emptyList())
+            ).getOrThrow()
 
-            if (confTalks.isNotEmpty()) {
-                langDao.insertTranslatedConferenceTalks(confTalks)
+            if (confTalks.isEmpty()) {
+                throw IOException("No conference talks downloaded for ${language.englishName}")
             }
+            langDao.insertTranslatedConferenceTalks(confTalks)
 
             val cachedChapters = langDao.countTranslatedChapters(language.code)
             val entity = DownloadedLanguageEntity(
                 langCode = language.code,
                 dictionaryDownloaded = true,
                 dictionaryEntryCount = dictCount,
-                conferenceDownloaded = confTalks.isNotEmpty(),
+                conferenceDownloaded = true,
                 scriptureChaptersCached = cachedChapters,
                 isActive = false,
             )
             langDao.upsertLanguage(entity)
             onProgress("${language.englishName} ready!")
-            entity
+            Result.success(entity)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Result.failure(e)
         }
     }
 
@@ -330,13 +383,14 @@ class GospelRepository(
         volumeId: String,
         onProgress: (String) -> Unit,
     ): Result<Int> = withContext(Dispatchers.IO) {
-        runCatching {
+        try {
             val books = StandardWorksData.getBooksForVolume(volumeId)
             val allTargets = books.flatMap { book ->
                 (1..book.chapterCount).map { ch -> book.id to ch }
             }
             val total = allTargets.size
-            var completed = 0
+            val completed = AtomicInteger(0)
+            val failed = AtomicInteger(0)
             val semaphore = Semaphore(6)
             val langDao = database.languageDao()
 
@@ -353,11 +407,13 @@ class GospelRepository(
                                     chapterNum = ch,
                                 ).onSuccess { entity ->
                                     langDao.upsertTranslatedChapter(entity)
+                                }.onFailure {
+                                    failed.incrementAndGet()
                                 }
                             }
-                            completed++
-                            if (completed % 5 == 0 || completed == total) {
-                                onProgress("Downloading: $completed / $total chapters")
+                            val done = completed.incrementAndGet()
+                            if (done % 5 == 0 || done == total) {
+                                onProgress("Downloading: $done / $total chapters")
                             }
                         }
                     }
@@ -368,8 +424,20 @@ class GospelRepository(
             langDao.getLanguageSync(language.code)?.let { existing ->
                 langDao.upsertLanguage(existing.copy(scriptureChaptersCached = totalCached))
             }
+
+            val failedCount = failed.get()
+            if (failedCount > 0) {
+                return@withContext Result.failure(
+                    IOException("Failed to download $failedCount of $total chapters")
+                )
+            }
+
             onProgress("Offline download complete ($total chapters)")
-            totalCached
+            Result.success(totalCached)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Result.failure(e)
         }
     }
 
@@ -430,7 +498,7 @@ class GospelRepository(
             }
             dbTalks
                 .groupBy { it.periodId }
-                .filterValues { it.size >= 10 }
+                .filterValues { it.size >= 30 }
                 .keys
                 .forEach { add(it) }
         }
@@ -544,7 +612,7 @@ class GospelRepository(
             GeneralConferenceData.getConferencePeriods(dbTalks)
         }
 
-    fun getContent(contentId: String): ContentChapter? = getEnglishContent(contentId)
+    suspend fun getContent(contentId: String): ContentChapter? = getEnglishContent(contentId)
 
     /**
      * Loads a scripture chapter or conference talk in [langCode].
@@ -558,20 +626,32 @@ class GospelRepository(
                 return@withContext baseEnglish.copy(langCode = GospelLanguage.ENG.code)
             }
 
+            val canonicalId = if (contentId.startsWith("bofm/")) {
+                "scripture/$contentId"
+            } else {
+                contentId
+            }
             val langDao = database.languageDao()
 
             // 1. Check translated conference talks table first for GC talks
-            if (contentId.startsWith("gc/")) {
-                val translatedTalk = langDao.getTranslatedConferenceTalk("$langCode|$contentId")
+            if (canonicalId.startsWith("gc/")) {
+                val translatedTalk = langDao.getTranslatedConferenceTalk("$langCode|$canonicalId")
                 if (translatedTalk != null) {
                     val verses = translatedTalk.paragraphs
                         .split("\n\n")
                         .map { it.trim() }
                         .filter { it.isNotBlank() }
                         .map { ContentVerse(number = null, text = it) }
+                    val subtitle = buildString {
+                        if (translatedTalk.speaker.isNotBlank()) append(translatedTalk.speaker)
+                        if (translatedTalk.periodName.isNotBlank()) {
+                            if (isNotEmpty()) append(" • ")
+                            append(translatedTalk.periodName)
+                        }
+                    }
                     return@withContext baseEnglish.copy(
                         title = translatedTalk.title,
-                        subtitle = "${translatedTalk.speaker} • ${translatedTalk.periodName}",
+                        subtitle = subtitle,
                         verses = verses,
                         langCode = langCode,
                     )
@@ -579,7 +659,7 @@ class GospelRepository(
             }
 
             // 2. Check cached translated chapters table
-            val cacheKey = "$langCode|$contentId"
+            val cacheKey = "$langCode|$canonicalId"
             val cached = langDao.getTranslatedChapter(cacheKey)
             if (cached != null) {
                 val verses = LanguageContentService.decodeVerses(cached.versesEncoded)
@@ -595,8 +675,8 @@ class GospelRepository(
 
             // 3. Fetch on demand from churchofjesuschrist.org and cache permanently for offline use
             val fetched = when {
-                contentId.startsWith("scripture/") -> {
-                    val parts = contentId.split("/")
+                canonicalId.startsWith("scripture/") -> {
+                    val parts = canonicalId.split("/")
                     if (parts.size == 4) {
                         LanguageContentService.fetchScriptureChapter(
                             langCode = langCode,
@@ -606,19 +686,8 @@ class GospelRepository(
                         ).getOrNull()
                     } else null
                 }
-                contentId.startsWith("bofm/") -> {
-                    val parts = contentId.split("/")
-                    if (parts.size == 3) {
-                        LanguageContentService.fetchScriptureChapter(
-                            langCode = langCode,
-                            volumeId = "bofm",
-                            bookId = parts[1],
-                            chapterNum = parts[2].toIntOrNull() ?: 1,
-                        ).getOrNull()
-                    } else null
-                }
-                contentId.startsWith("gc/") -> {
-                    LanguageContentService.fetchConferenceTalk(langCode, contentId).getOrNull()
+                canonicalId.startsWith("gc/") -> {
+                    LanguageContentService.fetchConferenceTalk(langCode, canonicalId).getOrNull()
                 }
                 else -> null
             }
@@ -643,8 +712,8 @@ class GospelRepository(
             null
         }
 
-    private fun getEnglishContent(contentId: String): ContentChapter? {
-        return when {
+    private suspend fun getEnglishContent(contentId: String): ContentChapter? = withContext(Dispatchers.IO) {
+        when {
             contentId.startsWith("scripture/") -> {
                 val parts = contentId.split("/")
                 if (parts.size == 4) {
@@ -672,16 +741,12 @@ class GospelRepository(
             }
             contentId.startsWith("gc/") -> {
                 ensureConferenceAssetLoaded()
-                val dbTalks = runBlocking {
-                    database.conferenceTalkDao().getAllTalksSync()
-                }
+                val dbTalks = database.conferenceTalkDao().getAllTalksSync()
                 GeneralConferenceData.getTalkContent(contentId, dbTalks)
             }
             contentId.startsWith("hymn/") -> {
                 ensureHymnsLoaded()
-                val synced = runBlocking {
-                    database.hymnDao().getAllSyncedHymnsSync()
-                }
+                val synced = database.hymnDao().getAllSyncedHymnsSync()
                 HymnsData.getHymnContent(contentId, synced)
             }
             else -> null
@@ -733,8 +798,10 @@ class GospelRepository(
             }.apply {
                 if (assetStreamProvider != null && this.assetStreamProvider == null) {
                     this.assetStreamProvider = assetStreamProvider
-                    ensureConferenceAssetLoaded()
-                    ensureHymnsLoaded()
+                    ioScope.launch {
+                        ensureConferenceAssetLoaded()
+                        ensureHymnsLoaded()
+                    }
                 }
                 if (filesDir != null) {
                     attachFilesDir(filesDir)

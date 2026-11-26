@@ -23,6 +23,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewModelScope
@@ -51,6 +52,7 @@ import com.thelightphone.sdk.ui.LightTopBar
 import com.thelightphone.sdk.ui.LightTopBarCenter
 import com.thelightphone.sdk.ui.gridUnitsAsDp
 import com.thelightphone.sdk.ui.lightClickable
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -134,15 +136,27 @@ class SearchViewModel(
 
         searchJob = viewModelScope.launch {
             _isSearching.value = true
-            val response = repository.searchGospel(
-                query = trimmed,
-                scope = currentScope,
-                isCancelled = { cancelFlag.get() },
-            )
-            if (!cancelFlag.get()) {
-                _matchedTopics.value = response.matchedTopics
-                _results.value = response.results
-                _isSearching.value = false
+            try {
+                val response = repository.searchGospel(
+                    query = trimmed,
+                    scope = currentScope,
+                    isCancelled = { cancelFlag.get() },
+                )
+                if (!cancelFlag.get()) {
+                    _matchedTopics.value = response.matchedTopics
+                    _results.value = response.results
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                if (!cancelFlag.get()) {
+                    _matchedTopics.value = emptyList()
+                    _results.value = emptyList()
+                }
+            } finally {
+                if (!cancelFlag.get()) {
+                    _isSearching.value = false
+                }
             }
         }
     }
@@ -167,13 +181,15 @@ class SearchScreen(
                     GospelDatabase.MIGRATION_2_3,
                     GospelDatabase.MIGRATION_3_4,
                     GospelDatabase.MIGRATION_4_5,
+                    GospelDatabase.MIGRATION_5_6,
                 )
                 fallbackToDestructiveMigration()
             }
         },
         assetStreamProvider = { path ->
             lightContext.readAsset(path).inputStream()
-        }
+        },
+        filesDir = lightContext.filesDir,
     )
 
     override val viewModelClass: Class<SearchViewModel>
@@ -234,10 +250,11 @@ class SearchScreen(
                         modifier = Modifier.fillMaxSize()
                     )
                 } else {
+                    val edgeBackPx = with(LocalDensity.current) { 44.dp.toPx() }
                     Column(
                         modifier = Modifier
                             .fillMaxSize()
-                            .swipeToBack { goBack() }
+                            .swipeToBack(sideOnly = true, edgeThresholdPx = edgeBackPx) { goBack() }
                     ) {
                         LightTopBar(
                             leftButton = LightBarButton.LightIcon(
@@ -316,6 +333,7 @@ class SearchScreen(
                             modifier = Modifier
                                 .weight(1f)
                                 .fillMaxWidth()
+                                .swipeToBack { goBack() }
                         ) {
                             when {
                                 isSearching -> {

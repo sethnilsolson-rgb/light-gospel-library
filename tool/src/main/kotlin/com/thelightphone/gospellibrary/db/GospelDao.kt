@@ -164,3 +164,24 @@ interface HymnDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertHymns(hymns: List<SyncedHymnEntity>)
 }
+
+@Dao
+interface NoteDao {
+    @Query("SELECT * FROM notes ORDER BY updatedAt DESC")
+    fun getAllNotes(): Flow<List<NoteEntity>>
+
+    @Query("SELECT * FROM notes WHERE contentId = :contentId ORDER BY updatedAt DESC")
+    fun getNotesForContent(contentId: String): Flow<List<NoteEntity>>
+
+    @Query("SELECT COUNT(*) FROM notes")
+    fun getNoteCount(): Flow<Int>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertNote(note: NoteEntity): Long
+
+    @Query("DELETE FROM notes WHERE id = :id")
+    suspend fun deleteNoteById(id: Long)
+
+    @Delete
+    suspend fun deleteNote(note: NoteEntity)
+}

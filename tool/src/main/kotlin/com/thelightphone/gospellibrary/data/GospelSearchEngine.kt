@@ -4,9 +4,10 @@ import com.thelightphone.gospellibrary.db.ConferenceTalkEntity
 import com.thelightphone.gospellibrary.model.HymnBook
 import com.thelightphone.gospellibrary.model.HymnItem
 import com.thelightphone.gospellibrary.model.ScriptureBook
-import kotlinx.serialization.Serializable
-import kotlinx.serialization.json.Json
+import java.io.BufferedReader
 import java.io.InputStream
+import java.io.InputStreamReader
+import java.io.Reader
 import java.util.Locale
 import java.util.zip.GZIPInputStream
 import kotlin.math.max
@@ -796,6 +797,9 @@ object GospelSearchEngine {
             SearchScope.CONFERENCE, SearchScope.HYMNS -> emptyList()
         }
 
+        val exactPhraseRegex = if (queryLower.length >= 2) buildWordBoundaryRegex(queryLower) else null
+        val conceptTermRegexes = conceptTerms.associateWith { buildWordBoundaryRegex(it) }
+
         val directCandidates = ArrayList<GospelSearchResult>(64)
         val conceptCandidates = ArrayList<GospelSearchResult>(48)
 
@@ -805,10 +809,12 @@ object GospelSearchEngine {
                 assetStreamProvider = assetStreamProvider,
                 volumeId = volId,
                 queryLower = queryLower,
+                exactPhraseRegex = exactPhraseRegex,
                 meaningfulTokens = meaningfulTokens,
                 queryStems = queryStems,
                 matchedClusters = matchedClusters.map { it.first },
                 conceptTerms = conceptTerms,
+                conceptTermRegexes = conceptTermRegexes,
                 conceptStems = conceptStems,
                 anchorBoostMap = anchorBoostMap,
                 directOut = directCandidates,
@@ -822,10 +828,12 @@ object GospelSearchEngine {
             searchConferenceTalks(
                 talks = conferenceTalks,
                 queryLower = queryLower,
+                exactPhraseRegex = exactPhraseRegex,
                 meaningfulTokens = meaningfulTokens,
                 queryStems = queryStems,
                 matchedClusters = matchedClusters.map { it.first },
                 conceptTerms = conceptTerms,
+                conceptTermRegexes = conceptTermRegexes,
                 directOut = directCandidates,
                 conceptOut = conceptCandidates,
                 isCancelled = isCancelled,
@@ -837,6 +845,7 @@ object GospelSearchEngine {
             searchHymns(
                 hymns = hymns,
                 queryLower = queryLower,
+                exactPhraseRegex = exactPhraseRegex,
                 meaningfulTokens = meaningfulTokens,
                 queryStems = queryStems,
                 directOut = directCandidates,
@@ -877,6 +886,12 @@ object GospelSearchEngine {
         )
     }
 
+    private fun buildWordBoundaryRegex(term: String): Regex =
+        Regex("(?<![\\p{L}\\p{N}_])${Regex.escape(term)}(?![\\p{L}\\p{N}_])")
+
+    private fun containsWholeTerm(lowerText: String, term: String, regex: Regex?): Boolean =
+        regex != null && lowerText.contains(term) && regex.containsMatchIn(lowerText)
+
     private fun findMatchingConcepts(
         queryLower: String,
         rawTokens: List<String>,
@@ -910,34 +925,193 @@ object GospelSearchEngine {
         return scored.sortedByDescending { it.second }.take(3)
     }
 
-    private val scriptureJson = Json { ignoreUnknownKeys = true }
+    /**
+     * Lightweight, pure-JVM streaming JSON reader so full-canon search never loads entire
+     * multi-megabyte scripture JSON volumes into heap and works in both Android and JVM tests.
+     */
+    private class StreamingJsonReader(private val reader: Reader) {
+        private var pushed: Int = -2
 
-    @Serializable
-    private data class SearchJsonVerse(val verse: Int = 0, val text: String = "")
+        private fun nextChar(): Int {
+            if (pushed != -2) {
+                val c = pushed
+                pushed = -2
+                return c
+            }
+            return reader.read()
+        }
 
-    @Serializable
-    private data class SearchJsonChapter(val chapter: Int = 0, val verses: List<SearchJsonVerse> = emptyList())
+        private fun unread(c: Int) {
+            pushed = c
+        }
 
-    @Serializable
-    private data class SearchJsonBook(val book: String = "", val chapters: List<SearchJsonChapter> = emptyList())
+        private fun peekNonWs(): Int {
+            var c = nextChar()
+            while (c == ' '.code || c == '\n'.code || c == '\r'.code || c == '\t'.code) {
+                c = nextChar()
+            }
+            unread(c)
+            return c
+        }
 
-    @Serializable
-    private data class SearchJsonSection(val section: Int = 0, val verses: List<SearchJsonVerse> = emptyList())
+        private fun expect(ch: Char) {
+            val c = peekNonWs()
+            if (c != ch.code) {
+                throw IllegalStateException("Expected '$ch' but got '${if (c == -1) "EOF" else c.toChar()}'")
+            }
+            nextChar()
+        }
 
-    @Serializable
-    private data class SearchJsonVolume(
-        val books: List<SearchJsonBook> = emptyList(),
-        val sections: List<SearchJsonSection> = emptyList(),
-    )
+        fun beginObject() = expect('{')
+        fun endObject() = expect('}')
+        fun beginArray() = expect('[')
+        fun endArray() = expect(']')
+
+        fun hasNextInObject(): Boolean {
+            val c = peekNonWs()
+            if (c == '}'.code || c == -1) return false
+            if (c == ','.code) {
+                nextChar()
+                return peekNonWs() != '}'.code
+            }
+            return true
+        }
+
+        fun hasNextInArray(): Boolean {
+            val c = peekNonWs()
+            if (c == ']'.code || c == -1) return false
+            if (c == ','.code) {
+                nextChar()
+                return peekNonWs() != ']'.code
+            }
+            return true
+        }
+
+        fun nextName(): String {
+            val name = nextString()
+            expect(':')
+            return name
+        }
+
+        fun nextString(): String {
+            expect('"')
+            val sb = StringBuilder()
+            while (true) {
+                val c = nextChar()
+                if (c == -1) throw IllegalStateException("Unterminated JSON string")
+                if (c == '"'.code) return sb.toString()
+                if (c == '\\'.code) {
+                    val esc = nextChar()
+                    when (esc) {
+                        '"'.code -> sb.append('"')
+                        '\\'.code -> sb.append('\\')
+                        '/'.code -> sb.append('/')
+                        'b'.code -> sb.append('\b')
+                        'f'.code -> sb.append('\u000C')
+                        'n'.code -> sb.append('\n')
+                        'r'.code -> sb.append('\r')
+                        't'.code -> sb.append('\t')
+                        'u'.code -> {
+                            var hex = 0
+                            repeat(4) {
+                                val h = nextChar()
+                                val digit = Character.digit(h, 16)
+                                if (digit < 0) throw IllegalStateException("Invalid unicode escape")
+                                hex = (hex shl 4) or digit
+                            }
+                            sb.append(hex.toChar())
+                        }
+                        else -> if (esc != -1) sb.append(esc.toChar())
+                    }
+                } else {
+                    sb.append(c.toChar())
+                }
+            }
+        }
+
+        fun nextInt(): Int {
+            peekNonWs()
+            val sb = StringBuilder()
+            while (true) {
+                val c = nextChar()
+                if (c == -1) break
+                val ch = c.toChar()
+                if (ch in '0'..'9' || ch == '-' || ch == '+' || ch == '.' || ch == 'e' || ch == 'E') {
+                    sb.append(ch)
+                } else {
+                    unread(c)
+                    break
+                }
+            }
+            return sb.toString().toDoubleOrNull()?.toInt() ?: 0
+        }
+
+        fun skipValue() {
+            when (peekNonWs()) {
+                '{'.code -> {
+                    beginObject()
+                    while (hasNextInObject()) {
+                        nextName()
+                        skipValue()
+                    }
+                    endObject()
+                }
+                '['.code -> {
+                    beginArray()
+                    while (hasNextInArray()) {
+                        skipValue()
+                    }
+                    endArray()
+                }
+                '"'.code -> nextString()
+                else -> {
+                    while (true) {
+                        val c = nextChar()
+                        if (c == -1 || c == ','.code || c == '}'.code || c == ']'.code ||
+                            c == ' '.code || c == '\n'.code || c == '\r'.code || c == '\t'.code
+                        ) {
+                            if (c != -1) unread(c)
+                            break
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private fun readVersesStreaming(reader: StreamingJsonReader): List<Pair<Int, String>> {
+        val verses = ArrayList<Pair<Int, String>>(32)
+        reader.beginArray()
+        while (reader.hasNextInArray()) {
+            reader.beginObject()
+            var verseNum = 0
+            var text = ""
+            while (reader.hasNextInObject()) {
+                when (reader.nextName()) {
+                    "verse" -> verseNum = reader.nextInt()
+                    "text" -> text = reader.nextString()
+                    else -> reader.skipValue()
+                }
+            }
+            reader.endObject()
+            if (text.isNotBlank()) {
+                verses.add(verseNum to text)
+            }
+        }
+        reader.endArray()
+        return verses
+    }
 
     private fun scanVolumeAsset(
         assetStreamProvider: ((String) -> InputStream?)?,
         volumeId: String,
         queryLower: String,
+        exactPhraseRegex: Regex?,
         meaningfulTokens: List<String>,
         queryStems: List<String>,
         matchedClusters: List<ConceptCluster>,
         conceptTerms: Set<String>,
+        conceptTermRegexes: Map<String, Regex>,
         conceptStems: Set<String>,
         anchorBoostMap: Map<String, Pair<String, Float>>,
         directOut: MutableList<GospelSearchResult>,
@@ -963,61 +1137,128 @@ object GospelSearchEngine {
         } ?: return
 
         try {
-            val stream = if (assetPath.endsWith(".bin")) GZIPInputStream(rawStream) else rawStream
-            val rawJson = stream.bufferedReader(Charsets.UTF_8).use { it.readText() }
-            if (isCancelled()) return
-            val parsed = scriptureJson.decodeFromString<SearchJsonVolume>(rawJson)
-
-            if (volumeId == "dc") {
-                val dcBook = booksInVol.first()
-                for (sec in parsed.sections) {
-                    if (isCancelled()) break
-                    val verses = sec.verses.mapNotNull { v ->
-                        if (v.text.isNotBlank()) v.verse to v.text else null
-                    }
-                    scoreChapterVerses(
-                        volumeId = volumeId,
-                        volumeTitle = volumeTitle,
-                        book = dcBook,
-                        chapterNum = sec.section,
-                        verses = verses,
-                        queryLower = queryLower,
-                        meaningfulTokens = meaningfulTokens,
-                        queryStems = queryStems,
-                        matchedClusters = matchedClusters,
-                        conceptTerms = conceptTerms,
-                        conceptStems = conceptStems,
-                        anchorBoostMap = anchorBoostMap,
-                        directOut = directOut,
-                        conceptOut = conceptOut,
-                    )
-                }
-            } else {
-                for (jsonBook in parsed.books) {
-                    if (isCancelled()) break
-                    val book = matchBookInVolume(jsonBook.book, booksInVol) ?: continue
-                    for (ch in jsonBook.chapters) {
-                        if (isCancelled()) break
-                        val verses = ch.verses.mapNotNull { v ->
-                            if (v.text.isNotBlank()) v.verse to v.text else null
+            rawStream.use { raw ->
+                val stream = if (assetPath.endsWith(".bin")) GZIPInputStream(raw) else raw
+                BufferedReader(InputStreamReader(stream, Charsets.UTF_8), 16384).use { buffered ->
+                    val jsonReader = StreamingJsonReader(buffered)
+                    jsonReader.beginObject()
+                    while (jsonReader.hasNextInObject()) {
+                        if (isCancelled()) return
+                        when (jsonReader.nextName()) {
+                            "sections" -> {
+                                if (volumeId != "dc" || booksInVol.isEmpty()) {
+                                    jsonReader.skipValue()
+                                } else {
+                                    val dcBook = booksInVol.first()
+                                    jsonReader.beginArray()
+                                    while (jsonReader.hasNextInArray()) {
+                                        if (isCancelled()) return
+                                        jsonReader.beginObject()
+                                        var sectionNum = 0
+                                        var verses: List<Pair<Int, String>> = emptyList()
+                                        while (jsonReader.hasNextInObject()) {
+                                            when (jsonReader.nextName()) {
+                                                "section" -> sectionNum = jsonReader.nextInt()
+                                                "verses" -> verses = readVersesStreaming(jsonReader)
+                                                else -> jsonReader.skipValue()
+                                            }
+                                        }
+                                        jsonReader.endObject()
+                                        if (verses.isNotEmpty()) {
+                                            scoreChapterVerses(
+                                                volumeId = volumeId,
+                                                volumeTitle = volumeTitle,
+                                                book = dcBook,
+                                                chapterNum = sectionNum,
+                                                verses = verses,
+                                                queryLower = queryLower,
+                                                exactPhraseRegex = exactPhraseRegex,
+                                                meaningfulTokens = meaningfulTokens,
+                                                queryStems = queryStems,
+                                                matchedClusters = matchedClusters,
+                                                conceptTerms = conceptTerms,
+                                                conceptTermRegexes = conceptTermRegexes,
+                                                conceptStems = conceptStems,
+                                                anchorBoostMap = anchorBoostMap,
+                                                directOut = directOut,
+                                                conceptOut = conceptOut,
+                                            )
+                                        }
+                                    }
+                                    jsonReader.endArray()
+                                }
+                            }
+                            "books" -> {
+                                if (volumeId == "dc") {
+                                    jsonReader.skipValue()
+                                } else {
+                                    jsonReader.beginArray()
+                                    while (jsonReader.hasNextInArray()) {
+                                        if (isCancelled()) return
+                                        jsonReader.beginObject()
+                                        var book: ScriptureBook? = null
+                                        while (jsonReader.hasNextInObject()) {
+                                            if (isCancelled()) return
+                                            when (jsonReader.nextName()) {
+                                                "book" -> {
+                                                    val bookName = jsonReader.nextString()
+                                                    book = matchBookInVolume(bookName, booksInVol)
+                                                }
+                                                "chapters" -> {
+                                                    val matchedBook = book
+                                                    if (matchedBook == null) {
+                                                        jsonReader.skipValue()
+                                                    } else {
+                                                        jsonReader.beginArray()
+                                                        while (jsonReader.hasNextInArray()) {
+                                                            if (isCancelled()) return
+                                                            jsonReader.beginObject()
+                                                            var chapterNum = 0
+                                                            var verses: List<Pair<Int, String>> = emptyList()
+                                                            while (jsonReader.hasNextInObject()) {
+                                                                when (jsonReader.nextName()) {
+                                                                    "chapter" -> chapterNum = jsonReader.nextInt()
+                                                                    "verses" -> verses = readVersesStreaming(jsonReader)
+                                                                    else -> jsonReader.skipValue()
+                                                                }
+                                                            }
+                                                            jsonReader.endObject()
+                                                            if (verses.isNotEmpty()) {
+                                                                scoreChapterVerses(
+                                                                    volumeId = volumeId,
+                                                                    volumeTitle = volumeTitle,
+                                                                    book = matchedBook,
+                                                                    chapterNum = chapterNum,
+                                                                    verses = verses,
+                                                                    queryLower = queryLower,
+                                                                    exactPhraseRegex = exactPhraseRegex,
+                                                                    meaningfulTokens = meaningfulTokens,
+                                                                    queryStems = queryStems,
+                                                                    matchedClusters = matchedClusters,
+                                                                    conceptTerms = conceptTerms,
+                                                                    conceptTermRegexes = conceptTermRegexes,
+                                                                    conceptStems = conceptStems,
+                                                                    anchorBoostMap = anchorBoostMap,
+                                                                    directOut = directOut,
+                                                                    conceptOut = conceptOut,
+                                                                )
+                                                            }
+                                                        }
+                                                        jsonReader.endArray()
+                                                    }
+                                                }
+                                                else -> jsonReader.skipValue()
+                                            }
+                                        }
+                                        jsonReader.endObject()
+                                    }
+                                    jsonReader.endArray()
+                                }
+                            }
+                            else -> jsonReader.skipValue()
                         }
-                        scoreChapterVerses(
-                            volumeId = volumeId,
-                            volumeTitle = volumeTitle,
-                            book = book,
-                            chapterNum = ch.chapter,
-                            verses = verses,
-                            queryLower = queryLower,
-                            meaningfulTokens = meaningfulTokens,
-                            queryStems = queryStems,
-                            matchedClusters = matchedClusters,
-                            conceptTerms = conceptTerms,
-                            conceptStems = conceptStems,
-                            anchorBoostMap = anchorBoostMap,
-                            directOut = directOut,
-                            conceptOut = conceptOut,
-                        )
                     }
+                    jsonReader.endObject()
                 }
             }
         } catch (_: Exception) {
@@ -1045,10 +1286,12 @@ object GospelSearchEngine {
         chapterNum: Int,
         verses: List<Pair<Int, String>>,
         queryLower: String,
+        exactPhraseRegex: Regex?,
         meaningfulTokens: List<String>,
         queryStems: List<String>,
         matchedClusters: List<ConceptCluster>,
         conceptTerms: Set<String>,
+        conceptTermRegexes: Map<String, Regex>,
         conceptStems: Set<String>,
         anchorBoostMap: Map<String, Pair<String, Float>>,
         directOut: MutableList<GospelSearchResult>,
@@ -1065,8 +1308,16 @@ object GospelSearchEngine {
             val anchorHit = anchorBoostMap[anchorKey]
 
             // Fast pre-filter before tokenizing to keep full-canon scans super fast & low-CPU
-            val exactPhraseHit = queryLower.length >= 3 && lower.contains(queryLower)
+            val exactPhraseHit = containsWholeTerm(lower, queryLower, exactPhraseRegex)
             var quickTokenHit = exactPhraseHit || anchorHit != null
+            if (!quickTokenHit) {
+                for (tok in meaningfulTokens) {
+                    if (tok.length >= 2 && lower.contains(tok)) {
+                        quickTokenHit = true
+                        break
+                    }
+                }
+            }
             if (!quickTokenHit) {
                 for (stem in queryStems) {
                     if (stem.length >= 3 && lower.contains(stem)) {
@@ -1079,7 +1330,7 @@ object GospelSearchEngine {
             if (!quickTokenHit && conceptStems.isNotEmpty()) {
                 var cHits = 0
                 for (term in conceptTerms) {
-                    if (lower.contains(term)) {
+                    if (containsWholeTerm(lower, term, conceptTermRegexes[term])) {
                         cHits++
                         if (cHits >= 2) {
                             quickConceptHit = true
@@ -1145,7 +1396,7 @@ object GospelSearchEngine {
                 var conceptTermMatches = 0
                 var matchedTermForSnippet = ""
                 for (term in conceptTerms) {
-                    if (lower.contains(term)) {
+                    if (containsWholeTerm(lower, term, conceptTermRegexes[term])) {
                         conceptTermMatches++
                         if (matchedTermForSnippet.isEmpty()) matchedTermForSnippet = term
                     }
@@ -1153,7 +1404,7 @@ object GospelSearchEngine {
                 conceptScore += conceptTermMatches * 14f + matchedQueryTokens * 12f
                 if (conceptScore >= 28f) {
                     val topicLabel = anchorHit?.first ?: matchedClusters.firstOrNull { cluster ->
-                        cluster.scriptureTerms.any { lower.contains(it) }
+                        cluster.scriptureTerms.any { containsWholeTerm(lower, it, conceptTermRegexes[it]) }
                     }?.label ?: matchedClusters.firstOrNull()?.label
                     conceptOut.add(
                         GospelSearchResult(
@@ -1175,10 +1426,12 @@ object GospelSearchEngine {
     private fun searchConferenceTalks(
         talks: List<ConferenceTalkEntity>,
         queryLower: String,
+        exactPhraseRegex: Regex?,
         meaningfulTokens: List<String>,
         queryStems: List<String>,
         matchedClusters: List<ConceptCluster>,
         conceptTerms: Set<String>,
+        conceptTermRegexes: Map<String, Regex>,
         directOut: MutableList<GospelSearchResult>,
         conceptOut: MutableList<GospelSearchResult>,
         isCancelled: () -> Boolean,
@@ -1202,7 +1455,7 @@ object GospelSearchEngine {
             var bestConceptPermille = 0
 
             // Check talk title + speaker + summary first (strong signal!)
-            val headerExact = queryLower.length >= 3 && headerLower.contains(queryLower)
+            val headerExact = containsWholeTerm(headerLower, queryLower, exactPhraseRegex)
             val headerWords = tokenize(headerLower)
             val headerStems = headerWords.mapTo(HashSet()) { stemWord(it) }
             val headerHits = meaningfulTokens.count { tok ->
@@ -1218,8 +1471,16 @@ object GospelSearchEngine {
             // Scan talk paragraphs for exact/keyword & conceptual teaching matches
             for ((pIdx, para) in paragraphs.withIndex()) {
                 val pLower = para.lowercase(Locale.US)
-                val exactHit = queryLower.length >= 3 && pLower.contains(queryLower)
+                val exactHit = containsWholeTerm(pLower, queryLower, exactPhraseRegex)
                 var hasQuickHit = exactHit
+                if (!hasQuickHit) {
+                    for (tok in meaningfulTokens) {
+                        if (tok.length >= 2 && pLower.contains(tok)) {
+                            hasQuickHit = true
+                            break
+                        }
+                    }
+                }
                 if (!hasQuickHit) {
                     for (st in queryStems) {
                         if (st.length >= 3 && pLower.contains(st)) {
@@ -1232,7 +1493,7 @@ object GospelSearchEngine {
                 var firstConceptTerm = ""
                 if (conceptTerms.isNotEmpty()) {
                     for (term in conceptTerms) {
-                        if (pLower.contains(term)) {
+                        if (containsWholeTerm(pLower, term, conceptTermRegexes[term])) {
                             conceptHits++
                             if (firstConceptTerm.isEmpty()) firstConceptTerm = term
                         }
@@ -1271,7 +1532,7 @@ object GospelSearchEngine {
                         bestConceptScore = cScore
                         bestConceptSnippet = buildSnippet(para, firstConceptTerm)
                         bestConceptTopic = matchedClusters.firstOrNull { cl ->
-                            cl.scriptureTerms.any { pLower.contains(it) }
+                            cl.scriptureTerms.any { containsWholeTerm(pLower, it, conceptTermRegexes[it]) }
                         }?.label ?: matchedClusters.firstOrNull()?.label
                         bestConceptPermille = permille
                     }
@@ -1318,6 +1579,7 @@ object GospelSearchEngine {
     private fun searchHymns(
         hymns: List<HymnItem>,
         queryLower: String,
+        exactPhraseRegex: Regex?,
         meaningfulTokens: List<String>,
         queryStems: List<String>,
         directOut: MutableList<GospelSearchResult>,
@@ -1334,7 +1596,7 @@ object GospelSearchEngine {
         for (hymn in hymns) {
             if (isCancelled()) break
             val titleLower = "${hymn.number} ${hymn.title} ${hymn.topic}".lowercase(Locale.US)
-            val titleExact = queryLower.length >= 3 && titleLower.contains(queryLower)
+            val titleExact = containsWholeTerm(titleLower, queryLower, exactPhraseRegex)
             val titleWords = tokenize(titleLower)
             val titleStems = titleWords.mapTo(HashSet()) { stemWord(it) }
             val titleHits = meaningfulTokens.count { tok ->
@@ -1353,8 +1615,16 @@ object GospelSearchEngine {
 
             for (stanza in hymn.stanzas) {
                 val sLower = stanza.lowercase(Locale.US)
-                val exactHit = queryLower.length >= 3 && sLower.contains(queryLower)
+                val exactHit = containsWholeTerm(sLower, queryLower, exactPhraseRegex)
                 var quickHit = exactHit
+                if (!quickHit) {
+                    for (tok in meaningfulTokens) {
+                        if (tok.length >= 2 && sLower.contains(tok)) {
+                            quickHit = true
+                            break
+                        }
+                    }
+                }
                 if (!quickHit) {
                     for (st in queryStems) {
                         if (st.length >= 3 && sLower.contains(st)) {

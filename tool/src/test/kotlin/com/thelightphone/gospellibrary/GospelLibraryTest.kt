@@ -5,18 +5,30 @@ import com.thelightphone.gospellibrary.data.GeneralConferenceData
 import com.thelightphone.gospellibrary.data.LanguageContentService
 import com.thelightphone.gospellibrary.data.LanguageDictionaryService
 import com.thelightphone.gospellibrary.data.StandardWorksData
+import com.thelightphone.gospellibrary.db.LanguageDictEntryEntity
+import com.thelightphone.gospellibrary.db.LanguageDictionaryDao
+import com.thelightphone.gospellibrary.db.NoteEntity
+import com.thelightphone.gospellibrary.model.ContentChapter
+import com.thelightphone.gospellibrary.model.ContentType
 import com.thelightphone.gospellibrary.model.ContentVerse
 import com.thelightphone.gospellibrary.model.GospelLanguage
 import com.thelightphone.gospellibrary.model.ReaderFontSize
 import com.thelightphone.gospellibrary.model.ReaderPageMode
+import com.thelightphone.gospellibrary.model.WordAnchor
+import com.thelightphone.gospellibrary.model.WordNoteUtils
 import com.thelightphone.gospellibrary.ui.GospelPageSlice
 import com.thelightphone.gospellibrary.ui.GospelReaderPage
 import com.thelightphone.gospellibrary.ui.GospelReaderPaginator
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.runBlocking
 import java.io.File
+import java.io.IOException
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class GospelLibraryTest {
@@ -471,5 +483,341 @@ class GospelLibraryTest {
         assertTrue(stanzas[0].contains("First line of verse one"))
         assertTrue(stanzas[1].startsWith("[Chorus]"))
         assertEquals("Text: Sample Author", parsed.credits)
+    }
+
+    @Test
+    fun webster1828SkipsHeaderButKeepsRealWordEntry() {
+        assertNull(LanguageDictionaryService.parseWebster1828CsvRow("\"word\",\"definition\""))
+        assertNull(LanguageDictionaryService.parseWebster1828CsvRow("Word,Definition"))
+
+        val realWord = LanguageDictionaryService.parseWebster1828CsvRow(
+            "\"WORD\",\"An articulate or vocal sound, or a combination of articulate and vocal sounds.\""
+        )
+        assertNotNull(realWord)
+        assertEquals("word", realWord.headword)
+        assertTrue(realWord.definition.contains("articulate or vocal sound"))
+    }
+
+    @Test
+    fun cjkCandidatesPrioritizeShiftedCompoundsBeforeSingleChar() {
+        val twoChar = LanguageDictionaryService.buildCjkCandidates("福音", 1)
+        assertEquals(listOf("福音", "音"), twoChar)
+
+        val threeChar = LanguageDictionaryService.buildCjkCandidates("傳福音", 2)
+        assertTrue(threeChar.indexOf("傳福音") < threeChar.indexOf("音"))
+        assertTrue(threeChar.indexOf("福音") < threeChar.indexOf("音"))
+        assertEquals("音", threeChar.last())
+    }
+
+    @Test
+    fun parseChurchOrgTalkHtmlPreservesListItemParagraphs() {
+        val html = """
+            <header><h1>List Talk</h1></header>
+            <div class="body-block">
+              <p>Opening paragraph.</p>
+              <ul>
+                <li>Plain list item.</li>
+                <li><p>First nested list paragraph.</p><p>Second nested list paragraph.</p></li>
+              </ul>
+            </div>
+        """.trimIndent()
+
+        val parsed = ConferenceSyncService.parseChurchOrgTalkHtml(
+            talkUri = "/general-conference/2027/04/12test",
+            htmlBody = html,
+            fallbackTitle = "Fallback",
+            periodId = "2027-04",
+            periodName = "April 2027",
+            year = 2027,
+            monthName = "April",
+            sessionName = "Saturday Morning Session",
+            sessionOrder = 0,
+            talkOrder = 0,
+        )
+        assertNotNull(parsed)
+        val paragraphs = parsed.paragraphs.split("\n\n")
+        assertEquals(
+            listOf(
+                "Opening paragraph.",
+                "Plain list item.",
+                "First nested list paragraph.",
+                "Second nested list paragraph.",
+            ),
+            paragraphs,
+        )
+    }
+
+    @Test
+    fun decodeHtmlEntitiesHandlesSupplementaryCodePointsWithoutDoubleDecoding() {
+        assertEquals("&mdash;", ConferenceSyncService.decodeHtmlEntities("&amp;mdash;"))
+        assertEquals("&#39;", ConferenceSyncService.decodeHtmlEntities("&amp;#39;"))
+        assertEquals("— '", ConferenceSyncService.decodeHtmlEntities("&mdash; &#39;"))
+        assertEquals("\uD83D\uDE00", ConferenceSyncService.decodeHtmlEntities("&#x1F600;"))
+        assertEquals("\uD840\uDC00", ConferenceSyncService.decodeHtmlEntities("&#x20000;"))
+        assertEquals("\uD83D\uDE00", ConferenceSyncService.decodeHtmlEntities("&#128512;"))
+    }
+
+    @Test
+    fun myMemoryResponseRejectsRateLimitWarnings() {
+        val rateLimited = """
+            {
+              "responseStatus": 429,
+              "responseData": {
+                "translatedText": "MYMEMORY WARNING: YOU USED ALL AVAILABLE FREE TRANSLATIONS FOR TODAY."
+              }
+            }
+        """.trimIndent()
+        assertNull(LanguageDictionaryService.parseMyMemoryResponse(rateLimited, "fe"))
+
+        val warningWith200 = """
+            {
+              "responseStatus": 200,
+              "responseData": {
+                "translatedText": "MYMEMORY WARNING: YOU USED ALL AVAILABLE FREE TRANSLATIONS FOR TODAY."
+              }
+            }
+        """.trimIndent()
+        assertNull(LanguageDictionaryService.parseMyMemoryResponse(warningWith200, "fe"))
+
+        val valid = """
+            {
+              "responseStatus": 200,
+              "responseData": {
+                "translatedText": "faith"
+              }
+            }
+        """.trimIndent()
+        assertEquals("faith", LanguageDictionaryService.parseMyMemoryResponse(valid, "fe"))
+    }
+
+    @Test
+    fun conferenceSyncHandles404PartialFailuresAndCancellation() {
+        runBlocking {
+            // 1. HTTP 404 manifest returns empty success (not a network error)
+            val notPublished = ConferenceSyncService.fetchConferenceFromChurchOrg(2027, 4) { null }
+            assertTrue(notPublished.isSuccess)
+            assertTrue(notPublished.getOrNull().orEmpty().isEmpty())
+
+            // 2. Partial talk failure returns failure instead of saving incomplete period
+            val manifestJson = """
+                {
+                  "content": {
+                    "body": "<li data-content-type=\"general-conference-session\"><h2 class=\"label\"><p class=\"title\">Saturday Morning</p></h2><a href=\"/study/general-conference/2027/04/11first\">1</a><a href=\"/study/general-conference/2027/04/12second\">2</a></li>"
+                  }
+                }
+            """.trimIndent()
+            val talk1Json = """
+                {
+                  "meta": { "title": "First Talk" },
+                  "content": { "body": "<h1>First Talk</h1><div class=\"body-block\"><p>Body text.</p></div>" }
+                }
+            """.trimIndent()
+            val partialResult = ConferenceSyncService.fetchConferenceFromChurchOrg(2027, 4) { uri ->
+                when (uri) {
+                    "/general-conference/2027/04" -> manifestJson
+                    "/general-conference/2027/04/11first" -> talk1Json
+                    else -> throw IOException("Connection reset")
+                }
+            }
+            assertTrue(partialResult.isFailure)
+
+            // 3. CancellationException is rethrown rather than wrapped in Result.failure
+            assertFailsWith<CancellationException> {
+                ConferenceSyncService.fetchConferenceFromChurchOrg(2027, 4) {
+                    throw CancellationException("Cancelled by caller")
+                }
+            }
+        }
+    }
+
+    @Test
+    fun interruptedDictionaryImportAllowsCleanRetry() {
+        runBlocking {
+            val storedEntries = mutableListOf<LanguageDictEntryEntity>()
+            val fakeDao = object : LanguageDictionaryDao {
+                override suspend fun lookupExact(dictKey: String, headword: String): List<LanguageDictEntryEntity> =
+                    storedEntries.filter { it.dictKey == dictKey && it.headword == headword }
+
+                override suspend fun countEntries(dictKey: String): Int =
+                    storedEntries.count { it.dictKey == dictKey }
+
+                override suspend fun insertEntries(entries: List<LanguageDictEntryEntity>) {
+                    storedEntries.addAll(entries)
+                }
+
+                override suspend fun insertEntry(entry: LanguageDictEntryEntity) {
+                    storedEntries.removeAll { it.dictKey == entry.dictKey && it.headword == entry.headword }
+                    storedEntries.add(entry)
+                }
+
+                override suspend fun deleteDictionary(dictKey: String) {
+                    storedEntries.removeAll { it.dictKey == dictKey }
+                }
+            }
+
+            // First attempt inserts > 1,000 partial rows, then fails mid-download
+            var attempt = 0
+            val firstAttempt = LanguageDictionaryService.downloadOfflineDictionary(
+                language = GospelLanguage.ENG,
+                dao = fakeDao,
+                onProgress = {},
+            ) { lang, dao, _ ->
+                attempt++
+                dao.insertEntries(
+                    (1..1500).map { i ->
+                        LanguageDictEntryEntity(
+                            dictKey = lang.dictKey,
+                            headword = "w$i",
+                            definition = "def $i",
+                        )
+                    }
+                )
+                throw IOException("Network dropped mid-stream")
+            }
+            assertTrue(firstAttempt.isFailure)
+            assertFalse(LanguageDictionaryService.isDictionaryComplete(GospelLanguage.ENG.dictKey, fakeDao))
+
+            // Retry must NOT skip due to > 1000 rows; it must run the importer and mark complete
+            val secondAttempt = LanguageDictionaryService.downloadOfflineDictionary(
+                language = GospelLanguage.ENG,
+                dao = fakeDao,
+                onProgress = {},
+            ) { lang, dao, _ ->
+                attempt++
+                dao.deleteDictionary(lang.dictKey)
+                dao.insertEntries(
+                    (1..5).map { i ->
+                        LanguageDictEntryEntity(
+                            dictKey = lang.dictKey,
+                            headword = "word$i",
+                            definition = "def $i",
+                        )
+                    }
+                )
+                5
+            }
+            assertTrue(secondAttempt.isSuccess)
+            assertEquals(2, attempt)
+            assertEquals(5, secondAttempt.getOrNull())
+            assertTrue(LanguageDictionaryService.isDictionaryComplete(GospelLanguage.ENG.dictKey, fakeDao))
+        }
+    }
+
+    @Test
+    fun wordNoteExtractToggleEncodeAndExcerptWorkCleanly() {
+        val verse = "I will go and do the things which the Lord hath commanded."
+        val goAnchor = WordNoteUtils.extractWordAnchor(verse, 6, 8)
+        assertNotNull(goAnchor)
+        assertEquals("go", WordNoteUtils.extractWordText(verse, goAnchor))
+
+        val andAnchor = WordNoteUtils.extractWordAnchor(verse, 6, 11)!!
+        val doAnchor = WordNoteUtils.extractWordAnchor(verse, 6, 15)!!
+        val lordAnchor = WordNoteUtils.extractWordAnchor(verse, 6, 39)!!
+        assertEquals("Lord", WordNoteUtils.extractWordText(verse, lordAnchor))
+
+        // Toggle ON multiple words, then toggle OFF one word
+        var selected = listOf(goAnchor)
+        selected = WordNoteUtils.toggleWordAnchor(selected, doAnchor)
+        selected = WordNoteUtils.toggleWordAnchor(selected, andAnchor)
+        selected = WordNoteUtils.toggleWordAnchor(selected, lordAnchor)
+        assertEquals(4, selected.size)
+
+        // Adjacent words ("go", "and", "do") merge cleanly; non-adjacent ("Lord") joins with "…"
+        val excerpt = WordNoteUtils.buildQuotedExcerpt(
+            anchors = selected,
+            paragraphLookup = { if (it == 6) verse else null },
+        )
+        assertEquals("go and do \u2026 Lord", excerpt)
+
+        // Tapping an already underlined word removes its underline
+        selected = WordNoteUtils.toggleWordAnchor(selected, andAnchor)
+        assertEquals(3, selected.size)
+        assertFalse(selected.contains(andAnchor))
+
+        // Encode/decode round-trip preserves exact anchors
+        val encoded = WordNoteUtils.encodeAnchors(selected)
+        assertEquals(selected, WordNoteUtils.decodeAnchors(encoded))
+    }
+
+    @Test
+    fun wordNoteHierarchyGroupsBooksChaptersAndOrdersNewestFirst() {
+        val scriptureChapter = ContentChapter(
+            id = "scripture/bofm/1-ne/3",
+            type = ContentType.SCRIPTURE,
+            title = "1 Nephi 3",
+            subtitle = "Book of Mormon",
+            verses = emptyList(),
+        )
+        val (sBook, sChap) = WordNoteUtils.deriveGospelBookAndChapter(scriptureChapter)
+        assertEquals("1 Nephi", sBook)
+        assertEquals("1 Nephi 3", sChap)
+
+        val hymnChapter = ContentChapter(
+            id = "hymn/home-and-church/1001",
+            type = ContentType.HYMN,
+            title = "#1001 · Come, Thou Fount",
+            subtitle = null,
+            verses = emptyList(),
+        )
+        val (hBook, _) = WordNoteUtils.deriveGospelBookAndChapter(hymnChapter)
+        assertEquals("Hymns—For Home and Church", hBook)
+
+        val notes = listOf(
+            NoteEntity(
+                id = 1,
+                contentId = "scripture/bofm/1-ne/3",
+                bookTitle = "1 Nephi",
+                chapterTitle = "1 Nephi 3",
+                anchorsEncoded = "6:7:9",
+                quotedText = "go",
+                noteText = "Older note",
+                updatedAt = 1000L,
+            ),
+            NoteEntity(
+                id = 2,
+                contentId = "scripture/bofm/alma/32",
+                bookTitle = "Alma",
+                chapterTitle = "Alma 32",
+                anchorsEncoded = "20:0:5",
+                quotedText = "faith",
+                noteText = "Seed of faith",
+                updatedAt = 2000L,
+            ),
+            NoteEntity(
+                id = 3,
+                contentId = "scripture/bofm/1-ne/3",
+                bookTitle = "1 Nephi",
+                chapterTitle = "1 Nephi 3",
+                anchorsEncoded = "6:38:42",
+                quotedText = "Lord",
+                noteText = "Newest note",
+                updatedAt = 3000L,
+            ),
+        )
+
+        val grouped = WordNoteUtils.groupNotesByBookAndChapter(notes)
+        assertEquals(2, grouped.size)
+        // 1 Nephi has the most recent note (3000L), so it appears highest
+        assertEquals("1 Nephi", grouped[0].bookTitle)
+        assertEquals(2, grouped[0].totalNoteCount)
+        assertEquals(1, grouped[0].chapters.size)
+        assertEquals("1 Nephi 3", grouped[0].chapters[0].chapterTitle)
+        // Most recent note first inside the chapter
+        assertEquals(listOf(3L, 1L), grouped[0].chapters[0].notes.map { it.id })
+
+        assertEquals("Alma", grouped[1].bookTitle)
+        assertEquals(1, grouped[1].totalNoteCount)
+
+        // Underlined slice mapping works when slice starts mid-verse
+        val annotated = WordNoteUtils.buildUnderlinedText(
+            text = "Lord hath commanded.",
+            paragraphIndex = 6,
+            sliceOffsetInParagraph = 38,
+            savedAnchors = listOf(WordAnchor(6, 38, 42)),
+            selectedAnchors = emptyList(),
+        )
+        assertEquals(1, annotated.spanStyles.size)
+        assertEquals(0, annotated.spanStyles[0].start)
+        assertEquals(4, annotated.spanStyles[0].end)
     }
 }

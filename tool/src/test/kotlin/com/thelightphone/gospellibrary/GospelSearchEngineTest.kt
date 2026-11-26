@@ -5,9 +5,13 @@ import com.thelightphone.gospellibrary.data.SearchMatchKind
 import com.thelightphone.gospellibrary.data.SearchScope
 import com.thelightphone.gospellibrary.db.ConferenceTalkEntity
 import java.io.ByteArrayInputStream
+import java.io.ByteArrayOutputStream
 import java.io.InputStream
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.zip.GZIPOutputStream
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
@@ -146,5 +150,120 @@ class GospelSearchEngineTest {
             resp.results.any { it.contentId == "gc/2026-10/peace-in-christ" },
             "Expected matching General Conference talk, got: ${resp.results.map { it.title }}",
         )
+    }
+
+    @Test
+    fun enforcesWordBoundariesAndSupportsTwoCharQueries() {
+        val boundaryAssets: (String) -> InputStream? = { path ->
+            when (path) {
+                "scriptures/new-testament.json" -> """
+                    {
+                      "books": [
+                        {
+                          "book": "Matthew",
+                          "chapters": [
+                            {
+                              "chapter": 5,
+                              "verses": [
+                                {"verse": 1, "text": "And he opened his mouth to sing a blessing toward every person."},
+                                {"verse": 2, "text": "Repent of sin and walk in peace."},
+                                {"verse": 3, "text": "Do not muzzle the ox that treadeth out the corn, nor put it in a box."}
+                              ]
+                            }
+                          ]
+                        }
+                      ]
+                    }
+                """.trimIndent().byteInputStream()
+                else -> ByteArrayInputStream("""{"books":[],"sections":[]}""".toByteArray())
+            }
+        }
+
+        val sinResp = GospelSearchEngine.search(
+            rawQuery = "sin",
+            scope = SearchScope.NT,
+            assetStreamProvider = boundaryAssets,
+            conferenceTalks = emptyList(),
+        )
+        assertTrue(sinResp.results.any { it.title == "Matthew 5:2" })
+        assertFalse(
+            sinResp.results.any { it.title == "Matthew 5:1" },
+            "Searching 'sin' must not match 'blessing' or 'sing'",
+        )
+
+        val warResp = GospelSearchEngine.search(
+            rawQuery = "war",
+            scope = SearchScope.NT,
+            assetStreamProvider = boundaryAssets,
+            conferenceTalks = emptyList(),
+        )
+        assertFalse(
+            warResp.results.any { it.title == "Matthew 5:1" },
+            "Searching 'war' must not match 'toward'",
+        )
+
+        val oxResp = GospelSearchEngine.search(
+            rawQuery = "ox",
+            scope = SearchScope.NT,
+            assetStreamProvider = boundaryAssets,
+            conferenceTalks = emptyList(),
+        )
+        assertTrue(
+            oxResp.results.any { it.title == "Matthew 5:3" },
+            "2-character query 'ox' should match Matthew 5:3",
+        )
+    }
+
+    @Test
+    fun streamsGzippedOldTestamentAndClosesCorruptStream() {
+        val otJson = """
+            {
+              "books": [
+                {
+                  "book": "Genesis",
+                  "chapters": [
+                    {
+                      "chapter": 11,
+                      "verses": [
+                        {"verse": 28, "text": "And Haran died before his father Terah in the land of his nativity, in Ur of the Chaldees."}
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+        """.trimIndent()
+        val gzippedBytes = ByteArrayOutputStream().use { bos ->
+            GZIPOutputStream(bos).use { gz -> gz.write(otJson.toByteArray(Charsets.UTF_8)) }
+            bos.toByteArray()
+        }
+
+        val otResp = GospelSearchEngine.search(
+            rawQuery = "Ur",
+            scope = SearchScope.OT,
+            assetStreamProvider = { path ->
+                if (path == "scriptures/old-testament.bin") ByteArrayInputStream(gzippedBytes) else null
+            },
+            conferenceTalks = emptyList(),
+        )
+        assertTrue(otResp.results.any { it.title == "Genesis 11:28" })
+
+        val streamClosed = AtomicBoolean(false)
+        val corruptStream = object : ByteArrayInputStream("not-gzip".toByteArray()) {
+            override fun close() {
+                streamClosed.set(true)
+                super.close()
+            }
+        }
+        val corruptResp = GospelSearchEngine.search(
+            rawQuery = "Genesis",
+            scope = SearchScope.OT,
+            assetStreamProvider = { path ->
+                if (path == "scriptures/old-testament.bin") corruptStream else null
+            },
+            conferenceTalks = emptyList(),
+        )
+        assertTrue(streamClosed.get(), "rawStream must be closed even when GZIPInputStream throws")
+        assertTrue(corruptResp.results.isEmpty())
     }
 }

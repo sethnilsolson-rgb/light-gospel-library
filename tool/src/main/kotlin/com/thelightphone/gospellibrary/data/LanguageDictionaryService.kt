@@ -5,7 +5,9 @@ import com.thelightphone.gospellibrary.db.LanguageDictionaryDao
 import com.thelightphone.gospellibrary.model.GospelLanguage
 import com.thelightphone.gospellibrary.model.WordLookupMatch
 import com.thelightphone.gospellibrary.model.WordLookupResult
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonObject
@@ -37,6 +39,11 @@ object LanguageDictionaryService {
         isLenient = true
     }
 
+    internal const val COMPLETE_MARKER_HEADWORD = "__dict_complete__"
+
+    suspend fun isDictionaryComplete(dictKey: String, dao: LanguageDictionaryDao): Boolean =
+        dao.lookupExact(dictKey, COMPLETE_MARKER_HEADWORD).isNotEmpty()
+
     /**
      * Downloads and indexes the best offline dictionary for [language] directly into Room SQLite.
      * Returns the total number of offline entries stored (0 for on-demand cached languages).
@@ -45,29 +52,68 @@ object LanguageDictionaryService {
         language: GospelLanguage,
         dao: LanguageDictionaryDao,
         onProgress: (String) -> Unit,
+    ): Result<Int> = downloadOfflineDictionary(
+        language = language,
+        dao = dao,
+        onProgress = onProgress,
+        importer = ::runDictionaryImporter,
+    )
+
+    internal suspend fun downloadOfflineDictionary(
+        language: GospelLanguage,
+        dao: LanguageDictionaryDao,
+        onProgress: (String) -> Unit,
+        importer: suspend (GospelLanguage, LanguageDictionaryDao, (String) -> Unit) -> Int,
     ): Result<Int> = withContext(Dispatchers.IO) {
-        runCatching {
-            val existing = dao.countEntries(language.dictKey)
-            if (existing > 1000) {
+        try {
+            if (isDictionaryComplete(language.dictKey, dao)) {
+                val existing = (dao.countEntries(language.dictKey) - 1).coerceAtLeast(0)
                 onProgress("${language.dictLabel} ready ($existing entries)")
-                return@runCatching existing
+                return@withContext Result.success(existing)
             }
 
-            when (language.dictKey) {
-                "eng_1828" -> downloadWebster1828(dao, onProgress)
-                "zh" -> downloadCcCedict(dao, onProgress)
-                "jpn" -> downloadEdict2(dao, onProgress)
-                "spa" -> downloadFreeDictTei("spa", "spa-eng", dao, onProgress)
-                "por" -> downloadFreeDictTei("por", "por-eng", dao, onProgress)
-                "fra" -> downloadFreeDictTei("fra", "fra-eng", dao, onProgress)
-                "ces" -> downloadWiktionaryTsv("ces", CZECH_WIKTIONARY_TSV_URL, "Czech", dao, onProgress)
-                else -> {
-                    // Korean, German, Tagalog, Italian, Russian use instant online lookup
-                    // that automatically caches every looked-up word offline in Room.
-                    onProgress("${language.dictLabel} enabled (auto-caches offline)")
-                    0
-                }
+            val inserted = importer(language, dao, onProgress)
+            if (inserted > 0) {
+                dao.insertEntry(
+                    LanguageDictEntryEntity(
+                        dictKey = language.dictKey,
+                        headword = COMPLETE_MARKER_HEADWORD,
+                        reading = "",
+                        definition = "complete",
+                    )
+                )
             }
+            Result.success(inserted)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    private suspend fun runDictionaryImporter(
+        language: GospelLanguage,
+        dao: LanguageDictionaryDao,
+        onProgress: (String) -> Unit,
+    ): Int = when (language.dictKey) {
+        "eng_1828" -> downloadWebster1828(dao, onProgress)
+        "zh" -> downloadCcCedict(dao, onProgress)
+        "jpn" -> downloadEdict2(dao, onProgress)
+        "spa" -> downloadFreeDictTei("spa", "spa-eng", dao, onProgress)
+        "por" -> downloadFreeDictTei("por", "por-eng", dao, onProgress)
+        "fra" -> downloadFreeDictTei("fra", "fra-eng", dao, onProgress)
+        "ces" -> downloadWiktionaryTsv("ces", CZECH_WIKTIONARY_TSV_URL, "Czech", dao, onProgress)
+        else -> {
+            // Korean, German, Tagalog, Italian, Russian use instant online lookup
+            // that automatically caches every looked-up word offline in Room.
+            onProgress("${language.dictLabel} enabled (auto-caches offline)")
+            0
+        }
+    }
+
+    private suspend fun cleanupPartialImport(dictKey: String, dao: LanguageDictionaryDao) {
+        withContext(NonCancellable) {
+            runCatching { dao.deleteDictionary(dictKey) }
         }
     }
 
@@ -76,13 +122,15 @@ object LanguageDictionaryService {
         onProgress: (String) -> Unit,
     ): Int {
         onProgress("Downloading Webster's 1828 Dictionary...")
-        dao.deleteDictionary("eng_1828")
         var connection: HttpURLConnection? = null
+        var clearedExisting = false
         var inserted = 0
         val batch = ArrayList<LanguageDictEntryEntity>(1500)
 
         try {
             connection = openConnection(WEBSTER_1828_CSV_URL, readTimeoutMs = 30000)
+            dao.deleteDictionary("eng_1828")
+            clearedExisting = true
             BufferedReader(InputStreamReader(connection.inputStream, Charsets.UTF_8), 65536).use { reader ->
                 val record = StringBuilder()
                 var insideQuotes = false
@@ -129,6 +177,9 @@ object LanguageDictionaryService {
                 inserted += batch.size
                 batch.clear()
             }
+        } catch (t: Throwable) {
+            if (clearedExisting) cleanupPartialImport("eng_1828", dao)
+            throw t
         } finally {
             connection?.disconnect()
         }
@@ -166,7 +217,10 @@ object LanguageDictionaryService {
 
         if (fields.size < 2) return null
         val headword = fields[0].trim().lowercase()
-        if (headword.isBlank() || headword == "word") return null
+        val rawFieldDef = fields[1].trim()
+        if (headword.isBlank() || (headword == "word" && rawFieldDef.equals("definition", ignoreCase = true))) {
+            return null
+        }
 
         val rawDef = fields[1]
             .replace(Regex("""</p>\s*<p[^>]*>""", RegexOption.IGNORE_CASE), "\n\n")
@@ -196,13 +250,16 @@ object LanguageDictionaryService {
         onProgress: (String) -> Unit,
     ): Int {
         onProgress("Downloading CC-CEDICT Chinese dictionary...")
-        dao.deleteDictionary("zh")
         var connection: HttpURLConnection? = null
+        var clearedExisting = false
         var inserted = 0
+        var nextProgress = 20000
         val batch = ArrayList<LanguageDictEntryEntity>(2000)
 
         try {
             connection = openConnection(CC_CEDICT_GZ_URL, readTimeoutMs = 30000)
+            dao.deleteDictionary("zh")
+            clearedExisting = true
             GZIPInputStream(connection.inputStream).use { gz ->
                 BufferedReader(InputStreamReader(gz, Charsets.UTF_8), 65536).use { reader ->
                     var line = reader.readLine()
@@ -214,8 +271,9 @@ object LanguageDictionaryService {
                                 dao.insertEntries(batch)
                                 inserted += batch.size
                                 batch.clear()
-                                if (inserted % 20000 == 0) {
+                                if (inserted >= nextProgress) {
                                     onProgress("Indexing Chinese dictionary: $inserted entries...")
+                                    while (nextProgress <= inserted) nextProgress += 20000
                                 }
                             }
                         }
@@ -228,6 +286,9 @@ object LanguageDictionaryService {
                 inserted += batch.size
                 batch.clear()
             }
+        } catch (t: Throwable) {
+            if (clearedExisting) cleanupPartialImport("zh", dao)
+            throw t
         } finally {
             connection?.disconnect()
         }
@@ -329,13 +390,16 @@ object LanguageDictionaryService {
         onProgress: (String) -> Unit,
     ): Int {
         onProgress("Downloading EDICT2 Japanese dictionary...")
-        dao.deleteDictionary("jpn")
         var connection: HttpURLConnection? = null
+        var clearedExisting = false
         var inserted = 0
+        var nextProgress = 20000
         val batch = ArrayList<LanguageDictEntryEntity>(2000)
 
         try {
             connection = openConnection(EDICT2_GZ_URL, readTimeoutMs = 30000)
+            dao.deleteDictionary("jpn")
+            clearedExisting = true
             GZIPInputStream(connection.inputStream).use { gz ->
                 BufferedReader(InputStreamReader(gz, Charset.forName("EUC-JP")), 65536).use { reader ->
                     var line = reader.readLine()
@@ -347,8 +411,9 @@ object LanguageDictionaryService {
                                 dao.insertEntries(batch)
                                 inserted += batch.size
                                 batch.clear()
-                                if (inserted % 20000 == 0) {
+                                if (inserted >= nextProgress) {
                                     onProgress("Indexing Japanese dictionary: $inserted entries...")
+                                    while (nextProgress <= inserted) nextProgress += 20000
                                 }
                             }
                         }
@@ -361,6 +426,9 @@ object LanguageDictionaryService {
                 inserted += batch.size
                 batch.clear()
             }
+        } catch (t: Throwable) {
+            if (clearedExisting) cleanupPartialImport("jpn", dao)
+            throw t
         } finally {
             connection?.disconnect()
         }
@@ -439,14 +507,16 @@ object LanguageDictionaryService {
         onProgress: (String) -> Unit,
     ): Int {
         onProgress("Downloading $pair dictionary...")
-        dao.deleteDictionary(dictKey)
         var connection: HttpURLConnection? = null
+        var clearedExisting = false
         var inserted = 0
         val batch = ArrayList<LanguageDictEntryEntity>(1000)
 
         try {
             connection = openConnection(freedictUrl(pair), readTimeoutMs = 25000)
             val fullXml = connection.inputStream.bufferedReader(Charsets.UTF_8).use { it.readText() }
+            dao.deleteDictionary(dictKey)
+            clearedExisting = true
             val entryRegex = Regex("""<entry[^>]*>(.*?)</entry>""", setOf(RegexOption.DOT_MATCHES_ALL))
             val orthRegex = Regex("""<orth[^>]*>(.*?)</orth>""", setOf(RegexOption.DOT_MATCHES_ALL))
             val quoteRegex = Regex("""<quote[^>]*>(.*?)</quote>""", setOf(RegexOption.DOT_MATCHES_ALL))
@@ -496,6 +566,9 @@ object LanguageDictionaryService {
                 inserted += batch.size
                 batch.clear()
             }
+        } catch (t: Throwable) {
+            if (clearedExisting) cleanupPartialImport(dictKey, dao)
+            throw t
         } finally {
             connection?.disconnect()
         }
@@ -511,13 +584,16 @@ object LanguageDictionaryService {
         onProgress: (String) -> Unit,
     ): Int {
         onProgress("Downloading $languageLabel–English dictionary...")
-        dao.deleteDictionary(dictKey)
         var connection: HttpURLConnection? = null
+        var clearedExisting = false
         var inserted = 0
+        var nextProgress = 20000
         val batch = ArrayList<LanguageDictEntryEntity>(2000)
 
         try {
             connection = openConnection(url, readTimeoutMs = 30000)
+            dao.deleteDictionary(dictKey)
+            clearedExisting = true
             BufferedReader(InputStreamReader(connection.inputStream, Charsets.UTF_8)).use { reader ->
                 var line: String? = reader.readLine()
                 while (line != null) {
@@ -528,8 +604,9 @@ object LanguageDictionaryService {
                             dao.insertEntries(batch)
                             inserted += batch.size
                             batch.clear()
-                            if (inserted % 20000 == 0) {
+                            if (inserted >= nextProgress) {
                                 onProgress("Indexing $languageLabel dictionary... $inserted forms")
+                                while (nextProgress <= inserted) nextProgress += 20000
                             }
                         }
                     }
@@ -541,6 +618,9 @@ object LanguageDictionaryService {
                 inserted += batch.size
                 batch.clear()
             }
+        } catch (t: Throwable) {
+            if (clearedExisting) cleanupPartialImport(dictKey, dao)
+            throw t
         } finally {
             connection?.disconnect()
         }
@@ -636,26 +716,9 @@ object LanguageDictionaryService {
             idx = right ?: left ?: return null
         }
 
-        // Build candidate compound spans covering idx: prioritize longest match starting at idx,
-        // then overlapping compounds containing idx (e.g. tapping 音 inside 福音).
-        val candidates = LinkedHashSet<String>()
-        for (len in 4 downTo 1) {
-            if (idx + len <= text.length) {
-                val sub = text.substring(idx, idx + len)
-                if (sub.all { isCjkOrKana(it) }) candidates.add(sub)
-            }
-        }
-        for (startShift in 1..2) {
-            val start = idx - startShift
-            if (start >= 0) {
-                for (len in 4 downTo (startShift + 1)) {
-                    if (start + len <= text.length) {
-                        val sub = text.substring(start, start + len)
-                        if (sub.all { isCjkOrKana(it) }) candidates.add(sub)
-                    }
-                }
-            }
-        }
+        // Build candidate compound spans covering idx: prioritize longest multi-character compounds
+        // (starting at idx or shifted left to cover idx) before falling back to the single character.
+        val candidates = buildCjkCandidates(text, idx)
 
         val singleChar = text[idx].toString()
         var bestMatch: LanguageDictEntryEntity? = null
@@ -859,6 +922,41 @@ object LanguageDictionaryService {
         return first.copy(reading = readings, definition = defs)
     }
 
+    internal fun buildCjkCandidates(text: String, idx: Int): List<String> {
+        val candidates = LinkedHashSet<String>()
+        for (len in 4 downTo 2) {
+            val maxShift = minOf(2, len - 1)
+            for (startShift in 0..maxShift) {
+                val start = idx - startShift
+                if (start >= 0 && start + len <= text.length) {
+                    val sub = text.substring(start, start + len)
+                    if (sub.all { isCjkOrKana(it) }) candidates.add(sub)
+                }
+            }
+        }
+        val single = text.substring(idx, idx + 1)
+        if (single.all { isCjkOrKana(it) }) candidates.add(single)
+        return candidates.toList()
+    }
+
+    internal fun parseMyMemoryResponse(body: String, query: String): String? {
+        val root = json.parseToJsonElement(body).jsonObject
+        val responseStatus = root["responseStatus"]?.jsonPrimitive?.content?.toIntOrNull()
+        if (responseStatus != HttpURLConnection.HTTP_OK) return null
+        val translated = root["responseData"]
+            ?.jsonObject
+            ?.get("translatedText")
+            ?.jsonPrimitive
+            ?.content
+            ?.trim()
+            ?: return null
+        if (translated.isBlank()) return null
+        if (translated.equals(query, ignoreCase = true)) return null
+        if (translated.startsWith("MYMEMORY WARNING", ignoreCase = true)) return null
+        if (translated.startsWith("QUERY LENGTH LIMIT", ignoreCase = true)) return null
+        return translated
+    }
+
     private fun fetchMyMemoryTranslation(query: String, sourceIso2: String): String? {
         var connection: HttpURLConnection? = null
         return runCatching {
@@ -868,9 +966,7 @@ object LanguageDictionaryService {
             val conn = openConnection(url, readTimeoutMs = 5000)
             connection = conn
             val body = conn.inputStream.bufferedReader(Charsets.UTF_8).use { it.readText() }
-            val root = json.parseToJsonElement(body).jsonObject
-            val translated = root["responseData"]?.jsonObject?.get("translatedText")?.jsonPrimitive?.content?.trim()
-            translated?.takeIf { it.isNotBlank() && !it.equals(query, ignoreCase = true) }
+            parseMyMemoryResponse(body, query)
         }.getOrNull().also {
             connection?.disconnect()
         }

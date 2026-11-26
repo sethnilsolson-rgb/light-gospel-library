@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.input.TextFieldState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Text
@@ -27,6 +28,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.withFrameNanos
@@ -45,6 +47,7 @@ import androidx.compose.ui.layout.positionInParent
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.TextLayoutResult
+import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.style.TextOverflow
@@ -55,16 +58,20 @@ import androidx.lifecycle.viewModelScope
 import com.thelightphone.gospellibrary.data.GospelRepository
 import com.thelightphone.gospellibrary.db.BookmarkEntity
 import com.thelightphone.gospellibrary.db.GospelDatabase
+import com.thelightphone.gospellibrary.db.NoteEntity
 import com.thelightphone.gospellibrary.model.ContentChapter
 import com.thelightphone.gospellibrary.model.GospelLanguage
 import com.thelightphone.gospellibrary.model.ReaderFontSize
 import com.thelightphone.gospellibrary.model.ReaderPageMode
+import com.thelightphone.gospellibrary.model.WordAnchor
 import com.thelightphone.gospellibrary.model.WordLookupResult
+import com.thelightphone.gospellibrary.model.WordNoteUtils
 import com.thelightphone.sdk.LightScreen
 import com.thelightphone.sdk.LightViewModel
 import com.thelightphone.sdk.SealedLightActivity
 import com.thelightphone.sdk.SimpleLightScreen
 import com.thelightphone.sdk.buildDatabase
+import com.thelightphone.sdk.rememberKeyboardOptions
 import com.thelightphone.sdk.ui.LightBarButton
 import com.thelightphone.sdk.ui.LightIcons
 import com.thelightphone.sdk.ui.LightScrollView
@@ -183,6 +190,37 @@ class ReaderViewModel(
     private val _languageNotice = MutableStateFlow<String?>(null)
     val languageNotice: StateFlow<String?> = _languageNotice.asStateFlow()
 
+    data class HeldWordContext(
+        val anchor: WordAnchor,
+        val wordText: String,
+        val scrollPermille: Int,
+        val existingNotes: List<NoteEntity>,
+    )
+
+    data class ComposingNoteState(
+        val existingNote: NoteEntity?,
+        val anchors: List<WordAnchor>,
+        val quotedExcerpt: String,
+        val scrollPermille: Int,
+    )
+
+    private val _chapterNotes = MutableStateFlow<List<NoteEntity>>(emptyList())
+    val chapterNotes: StateFlow<List<NoteEntity>> = _chapterNotes.asStateFlow()
+
+    private val _heldWord = MutableStateFlow<HeldWordContext?>(null)
+    val heldWord: StateFlow<HeldWordContext?> = _heldWord.asStateFlow()
+
+    private val _isSelectingNoteWords = MutableStateFlow(false)
+    val isSelectingNoteWords: StateFlow<Boolean> = _isSelectingNoteWords.asStateFlow()
+
+    private val _selectedWordAnchors = MutableStateFlow<List<WordAnchor>>(emptyList())
+    val selectedWordAnchors: StateFlow<List<WordAnchor>> = _selectedWordAnchors.asStateFlow()
+
+    private var noteSelectionScrollPermille: Int = 0
+
+    private val _composingNote = MutableStateFlow<ComposingNoteState?>(null)
+    val composingNote: StateFlow<ComposingNoteState?> = _composingNote.asStateFlow()
+
     private val _lookupEnabled = MutableStateFlow(false)
     val lookupEnabled: StateFlow<Boolean> = _lookupEnabled.asStateFlow()
 
@@ -198,10 +236,17 @@ class ReaderViewModel(
     private var hasInitialized = false
 
     private var bookmarkJob: Job? = null
+    private var notesJob: Job? = null
     private var loadJob: Job? = null
     private var languagesJob: Job? = null
     private var lookupJob: Job? = null
     private var scrollSaveJob: Job? = null
+
+    private suspend fun refreshLookupEnabled(
+        langCode: String = _chapter.value?.langCode ?: _currentLanguage.value.code,
+    ) {
+        _lookupEnabled.value = repository.isDictionaryReadyForLanguage(GospelLanguage.fromCode(langCode))
+    }
 
     override fun onScreenShow(screen: SimpleLightScreen<Unit>) {
         super.onScreenShow(screen)
@@ -216,8 +261,8 @@ class ReaderViewModel(
                     .sortedBy { GospelLanguage.entries.indexOf(it) }
                 _availableLanguages.value = listOf(GospelLanguage.ENG) + others
 
-                // Refresh whether press-and-hold dictionary is active for current language
-                _lookupEnabled.value = repository.isDictionaryReadyForLanguage(_currentLanguage.value)
+                // Refresh whether press-and-hold dictionary is active for the rendered chapter language
+                refreshLookupEnabled()
             }
         }
 
@@ -227,7 +272,7 @@ class ReaderViewModel(
                 val activeCode = repository.getActiveLanguageCodeSync()
                 val activeLang = GospelLanguage.fromCode(activeCode)
                 _currentLanguage.value = activeLang
-                _lookupEnabled.value = repository.isDictionaryReadyForLanguage(activeLang)
+                refreshLookupEnabled(activeLang.code)
                 loadContent(
                     id = _contentId.value,
                     language = activeLang,
@@ -274,6 +319,7 @@ class ReaderViewModel(
         _contentId.value = id
         _languageNotice.value = null
         dismissLookup()
+        cancelNoteWordSelection()
         scrollSaveJob?.cancel()
 
         loadJob?.cancel()
@@ -286,11 +332,9 @@ class ReaderViewModel(
             _isLoadingLanguage.value = false
 
             val resolvedChapter = if (loaded != null) {
-                _lookupEnabled.value = repository.isDictionaryReadyForLanguage(language)
                 loaded
             } else if (isNonEnglish) {
                 // Gracefully fall back to built-in English while offline if chapter isn't cached yet
-                _lookupEnabled.value = repository.isDictionaryReadyForLanguage(GospelLanguage.ENG)
                 _languageNotice.value =
                     "${language.nativeName} chapter isn't cached offline yet. Connect to internet once or pre-download in Settings."
                 repository.getContentInLanguage(id, GospelLanguage.ENG.code)
@@ -301,6 +345,7 @@ class ReaderViewModel(
             currentScrollPermille = targetPermille
             _pendingScrollRestore.value = (++restoreToken) to targetPermille
             _chapter.value = resolvedChapter
+            refreshLookupEnabled(resolvedChapter?.langCode ?: language.code)
 
             if (resolvedChapter != null) {
                 repository.recordLastRead(resolvedChapter, targetPermille)
@@ -310,6 +355,13 @@ class ReaderViewModel(
             bookmarkJob = viewModelScope.launch {
                 repository.getBookmarksForContent(id).collect { list ->
                     _chapterBookmarks.value = list
+                }
+            }
+
+            notesJob?.cancel()
+            notesJob = viewModelScope.launch {
+                repository.getNotesForContent(id).collect { list ->
+                    _chapterNotes.value = list
                 }
             }
         }
@@ -342,7 +394,6 @@ class ReaderViewModel(
         val keepPermille = currentScrollPermille
         viewModelScope.launch {
             repository.setActiveLanguage(nextLang.code)
-            _lookupEnabled.value = repository.isDictionaryReadyForLanguage(nextLang)
         }
         loadContent(
             id = _contentId.value,
@@ -352,24 +403,46 @@ class ReaderViewModel(
         )
     }
 
-    fun lookupWordAt(text: String, charIndex: Int, verseNumber: Int?) {
-        if (!_lookupEnabled.value) return
-        val activeLangCode = _chapter.value?.langCode ?: _currentLanguage.value.code
-        val contentId = _contentId.value
+    fun onWordLongPressed(
+        paragraphIndex: Int,
+        fullParagraphText: String,
+        charIndexInParagraph: Int,
+        verseNumber: Int?,
+        scrollPermille: Int,
+    ) {
+        val anchor = WordNoteUtils.extractWordAnchor(fullParagraphText, paragraphIndex, charIndexInParagraph)
+            ?: return
+        val wordText = WordNoteUtils.extractWordText(fullParagraphText, anchor)
+        if (wordText.isBlank()) return
+
+        val existing = WordNoteUtils.findNotesForAnchor(_chapterNotes.value, anchor)
+        _heldWord.value = HeldWordContext(
+            anchor = anchor,
+            wordText = wordText,
+            scrollPermille = scrollPermille.coerceIn(0, 1000),
+            existingNotes = existing,
+        )
 
         lookupJob?.cancel()
-        lookupJob = viewModelScope.launch {
-            _isLookingUp.value = true
-            _lookupResult.value = null
-            val result = repository.lookupWordInLanguage(
-                text = text,
-                charIndex = charIndex,
-                langCode = activeLangCode,
-                contentId = contentId,
-                verseNumber = verseNumber,
-            )
+        if (_lookupEnabled.value) {
+            val activeLangCode = _chapter.value?.langCode ?: _currentLanguage.value.code
+            val contentId = _contentId.value
+            lookupJob = viewModelScope.launch {
+                _isLookingUp.value = true
+                _lookupResult.value = null
+                val result = repository.lookupWordInLanguage(
+                    text = fullParagraphText,
+                    charIndex = charIndexInParagraph,
+                    langCode = activeLangCode,
+                    contentId = contentId,
+                    verseNumber = verseNumber,
+                )
+                _isLookingUp.value = false
+                _lookupResult.value = result
+            }
+        } else {
             _isLookingUp.value = false
-            _lookupResult.value = result
+            _lookupResult.value = null
         }
     }
 
@@ -377,6 +450,110 @@ class ReaderViewModel(
         lookupJob?.cancel()
         _isLookingUp.value = false
         _lookupResult.value = null
+        _heldWord.value = null
+    }
+
+    fun startNoteWordSelection() {
+        val held = _heldWord.value ?: return
+        dismissLookup()
+        noteSelectionScrollPermille = held.scrollPermille
+        _selectedWordAnchors.value = listOf(held.anchor)
+        _isSelectingNoteWords.value = true
+    }
+
+    fun toggleNoteWordAt(paragraphIndex: Int, fullParagraphText: String, charIndexInParagraph: Int): Boolean {
+        val anchor = WordNoteUtils.extractWordAnchor(fullParagraphText, paragraphIndex, charIndexInParagraph)
+            ?: return false
+        _selectedWordAnchors.value = WordNoteUtils.toggleWordAnchor(_selectedWordAnchors.value, anchor)
+        return true
+    }
+
+    fun cancelNoteWordSelection() {
+        _isSelectingNoteWords.value = false
+        _selectedWordAnchors.value = emptyList()
+    }
+
+    fun finishNoteWordSelection() {
+        val anchors = _selectedWordAnchors.value
+        val ch = _chapter.value ?: return
+        if (anchors.isEmpty()) return
+        val quoted = WordNoteUtils.buildQuotedExcerpt(
+            anchors = anchors,
+            paragraphLookup = { idx -> ch.verses.getOrNull(idx)?.text },
+        )
+        _isSelectingNoteWords.value = false
+        _selectedWordAnchors.value = emptyList()
+        _composingNote.value = ComposingNoteState(
+            existingNote = null,
+            anchors = anchors,
+            quotedExcerpt = quoted,
+            scrollPermille = noteSelectionScrollPermille,
+        )
+    }
+
+    fun openExistingNoteEditor(note: NoteEntity) {
+        dismissLookup()
+        _composingNote.value = ComposingNoteState(
+            existingNote = note,
+            anchors = WordNoteUtils.decodeAnchors(note.anchorsEncoded),
+            quotedExcerpt = note.quotedText,
+            scrollPermille = note.scrollPermille,
+        )
+    }
+
+    fun saveComposingNote(rawText: String) {
+        val composing = _composingNote.value ?: return
+        val ch = _chapter.value ?: return
+        val trimmed = rawText.trim()
+        val now = System.currentTimeMillis()
+        _composingNote.value = null
+
+        viewModelScope.launch {
+            val existing = composing.existingNote
+            if (trimmed.isEmpty()) {
+                if (existing != null) {
+                    repository.deleteNote(existing)
+                }
+                return@launch
+            }
+            if (existing != null) {
+                repository.saveNote(
+                    existing.copy(
+                        noteText = trimmed,
+                        updatedAt = now,
+                    )
+                )
+            } else {
+                val (bookTitle, chapterTitle) = WordNoteUtils.deriveGospelBookAndChapter(ch)
+                repository.saveNote(
+                    NoteEntity(
+                        contentId = ch.id,
+                        bookTitle = bookTitle,
+                        chapterTitle = chapterTitle,
+                        anchorsEncoded = WordNoteUtils.encodeAnchors(composing.anchors),
+                        quotedText = composing.quotedExcerpt,
+                        noteText = trimmed,
+                        scrollPermille = composing.scrollPermille.coerceIn(0, 1000),
+                        createdAt = now,
+                        updatedAt = now,
+                    )
+                )
+            }
+        }
+    }
+
+    fun deleteComposingNote() {
+        val existing = _composingNote.value?.existingNote
+        _composingNote.value = null
+        if (existing != null) {
+            viewModelScope.launch {
+                repository.deleteNote(existing)
+            }
+        }
+    }
+
+    fun dismissNoteComposer() {
+        _composingNote.value = null
     }
 
     fun toggleBookmark(
@@ -429,6 +606,8 @@ class ReaderScreen(
     private val initialScrollPermille: Int? = null,
 ) : LightScreen<Unit, ReaderViewModel>(sealedActivity) {
 
+    private val vibrator = sealedActivity.vibrator
+
     private val repository = GospelRepository.getInstance(
         dbProvider = {
             lightContext.buildDatabase(
@@ -439,6 +618,7 @@ class ReaderScreen(
                     GospelDatabase.MIGRATION_2_3,
                     GospelDatabase.MIGRATION_3_4,
                     GospelDatabase.MIGRATION_4_5,
+                    GospelDatabase.MIGRATION_5_6,
                 )
                 fallbackToDestructiveMigration()
             }
@@ -459,6 +639,11 @@ class ReaderScreen(
         val themeColors by LightThemeController.colors.collectAsState()
         val chapter by viewModel.chapter.collectAsState()
         val chapterBookmarks by viewModel.chapterBookmarks.collectAsState()
+        val chapterNotes by viewModel.chapterNotes.collectAsState()
+        val heldWord by viewModel.heldWord.collectAsState()
+        val isSelectingNoteWords by viewModel.isSelectingNoteWords.collectAsState()
+        val selectedWordAnchors by viewModel.selectedWordAnchors.collectAsState()
+        val composingNote by viewModel.composingNote.collectAsState()
         val pendingScrollRestore by viewModel.pendingScrollRestore.collectAsState()
         val fontSize by viewModel.fontSize.collectAsState()
         val pageMode by viewModel.pageMode.collectAsState()
@@ -470,6 +655,11 @@ class ReaderScreen(
         val lookupEnabled by viewModel.lookupEnabled.collectAsState()
         val isLookingUp by viewModel.isLookingUp.collectAsState()
         val lookupResult by viewModel.lookupResult.collectAsState()
+        val keyboardOptionsFlow = rememberKeyboardOptions()
+
+        val savedNoteAnchors = remember(chapterNotes) {
+            chapterNotes.flatMap { WordNoteUtils.decodeAnchors(it.anchorsEncoded) }
+        }
 
         val textVariant = when (fontSize) {
             ReaderFontSize.COMPACT -> LightTextVariant.Detail
@@ -646,22 +836,91 @@ class ReaderScreen(
 
         val haptics = LocalHapticFeedback.current
         val showLanguageToggle = availableLanguages.size > 1
-        val isOverlayOpen = isLookingUp || lookupResult != null
+        val isOverlayOpen = heldWord != null || isLookingUp || lookupResult != null
 
         LightTheme(colors = themeColors) {
+            val activeComposing = composingNote
+            if (activeComposing != null) {
+                val existingText = activeComposing.existingNote?.noteText.orEmpty()
+                val noteState = remember(activeComposing) {
+                    TextFieldState(
+                        initialText = existingText,
+                        initialSelection = TextRange(existingText.length),
+                    )
+                }
+                ReaderNoteComposer(
+                    title = chapter?.title ?: "Note",
+                    quotedExcerpt = activeComposing.quotedExcerpt,
+                    state = noteState,
+                    keyboardOptionsFlow = keyboardOptionsFlow,
+                    vibrator = vibrator,
+                    onSave = { viewModel.saveComposingNote(it) },
+                    onBack = { viewModel.dismissNoteComposer() },
+                    onDelete = if (activeComposing.existingNote != null) {
+                        { viewModel.deleteComposingNote() }
+                    } else {
+                        null
+                    },
+                    editorKey = activeComposing.existingNote?.id ?: activeComposing.quotedExcerpt,
+                )
+                return@LightTheme
+            }
+
             Box(
                 modifier = Modifier
                     .fillMaxSize()
                     .background(LightThemeTokens.colors.background)
                     .readerHorizontalSwipes(
-                        enabled = !isOverlayOpen,
+                        enabled = !isOverlayOpen && !isSelectingNoteWords,
                         onEdgeSwipeBack = { goBack() },
                         onSwipeRight = { goPrevPageOrChapter() },
                         onSwipeLeft = { goNextPageOrChapter() },
                     )
             ) {
                 Column(modifier = Modifier.fillMaxSize()) {
-                    if (!isFullScreen) {
+                    if (isSelectingNoteWords) {
+                        val selectedCount = selectedWordAnchors.size
+                        LightTopBar(
+                            leftButton = LightBarButton.Text(
+                                text = "Cancel",
+                                onClick = { viewModel.cancelNoteWordSelection() },
+                            ),
+                            center = LightTopBarCenter.Text(
+                                text = if (selectedCount > 0) "Where? ($selectedCount)" else "Where?",
+                            ),
+                            rightButton = LightBarButton.Text(
+                                text = "Done",
+                                onClick = {
+                                    if (selectedWordAnchors.isNotEmpty()) {
+                                        viewModel.finishNoteWordSelection()
+                                    }
+                                },
+                            ),
+                            modifier = Modifier.padding(bottom = 0.5f.gridUnitsAsDp()),
+                        )
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(start = sidePadDp, end = sidePadDp, top = 2.dp, bottom = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            LightText(
+                                text = if (selectedCount > 0) {
+                                    "Tap words to underline or remove, then tap Done"
+                                } else {
+                                    "Tap at least one word to underline"
+                                },
+                                variant = LightTextVariant.Detail,
+                                lighten = true,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        }
+                        HorizontalDivider(
+                            color = LightThemeTokens.colors.content.copy(alpha = 0.2f),
+                            thickness = 1.dp,
+                        )
+                    } else if (!isFullScreen) {
                         // Top Bar with optional seamless Language Toggle right up by the title ("1 Nephi 2")
                         Box(
                             modifier = Modifier
@@ -761,8 +1020,8 @@ class ReaderScreen(
                                     if (baseSub != null) "$pageTag • $baseSub" else pageTag
                                 }
                                 !chapter?.subtitle.isNullOrBlank() -> chapter?.subtitle
-                                lookupEnabled -> "Hold word to define • 2× tap full"
-                                else -> "Double-tap text for full screen"
+                                lookupEnabled -> "Hold word to define or note • 2× full"
+                                else -> "Hold word to add note • 2× tap full"
                             }
                             LightText(
                                 text = subText.orEmpty(),
@@ -832,8 +1091,8 @@ class ReaderScreen(
                             .weight(1f)
                             .fillMaxWidth()
                             .onSizeChanged { pagedViewportSize = it }
-                            .pointerInput(isOverlayOpen) {
-                                if (isOverlayOpen) return@pointerInput
+                            .pointerInput(isOverlayOpen, isSelectingNoteWords) {
+                                if (isOverlayOpen || isSelectingNoteWords) return@pointerInput
                                 detectTapGestures(
                                     onDoubleTap = { viewModel.toggleFullScreen() }
                                 )
@@ -866,7 +1125,7 @@ class ReaderScreen(
                                             .fillMaxWidth()
                                             .padding(
                                                 top = if (slice.showVerseNumber) 6.dp else 2.dp,
-                                                bottom = 8.dp,
+                                                bottom = if (slice.isLastSlice) 8.dp else 0.dp,
                                             ),
                                         verticalAlignment = Alignment.Top,
                                     ) {
@@ -878,17 +1137,34 @@ class ReaderScreen(
                                                 modifier = Modifier.width(32.dp),
                                             )
                                         }
+                                        val fullVerseText = currentChapter.verses.getOrNull(slice.sourceIndex)?.text ?: slice.text
                                         LookupableVerseText(
                                             text = slice.text,
+                                            paragraphIndex = slice.sourceIndex,
+                                            sliceOffsetInParagraph = slice.charOffsetInVerse,
+                                            savedAnchors = savedNoteAnchors,
+                                            selectedAnchors = selectedWordAnchors,
+                                            isSelectingWords = isSelectingNoteWords,
                                             variant = textVariant,
-                                            lookupEnabled = lookupEnabled,
                                             onDoubleTap = { viewModel.toggleFullScreen() },
-                                            onLongPressChar = { charIndex ->
+                                            onTapChar = { localChar ->
+                                                if (viewModel.toggleNoteWordAt(
+                                                        paragraphIndex = slice.sourceIndex,
+                                                        fullParagraphText = fullVerseText,
+                                                        charIndexInParagraph = slice.charOffsetInVerse + localChar,
+                                                    )
+                                                ) {
+                                                    runCatching { vibrator.click() }
+                                                }
+                                            },
+                                            onLongPressChar = { localChar ->
                                                 haptics.performHapticFeedback(HapticFeedbackType.LongPress)
-                                                viewModel.lookupWordAt(
-                                                    text = slice.text,
-                                                    charIndex = charIndex,
+                                                viewModel.onWordLongPressed(
+                                                    paragraphIndex = slice.sourceIndex,
+                                                    fullParagraphText = fullVerseText,
+                                                    charIndexInParagraph = slice.charOffsetInVerse + localChar,
                                                     verseNumber = slice.verseNumber,
+                                                    scrollPermille = readCurrentPermille(),
                                                 )
                                             },
                                             modifier = Modifier.weight(1f),
@@ -903,7 +1179,7 @@ class ReaderScreen(
                                     .fillMaxSize()
                                     .padding(start = sidePadDp)
                             ) {
-                                Spacer(modifier = Modifier.height(if (isFullScreen) 18.dp else 12.dp))
+                                Spacer(modifier = Modifier.height(if (isFullScreen && !isSelectingNoteWords) 18.dp else 12.dp))
 
                                 currentChapter.verses.forEachIndexed { idx, verse ->
                                     Row(
@@ -925,15 +1201,31 @@ class ReaderScreen(
                                         }
                                         LookupableVerseText(
                                             text = verse.text,
+                                            paragraphIndex = idx,
+                                            sliceOffsetInParagraph = 0,
+                                            savedAnchors = savedNoteAnchors,
+                                            selectedAnchors = selectedWordAnchors,
+                                            isSelectingWords = isSelectingNoteWords,
                                             variant = textVariant,
-                                            lookupEnabled = lookupEnabled,
                                             onDoubleTap = { viewModel.toggleFullScreen() },
+                                            onTapChar = { charIndex ->
+                                                if (viewModel.toggleNoteWordAt(
+                                                        paragraphIndex = idx,
+                                                        fullParagraphText = verse.text,
+                                                        charIndexInParagraph = charIndex,
+                                                    )
+                                                ) {
+                                                    runCatching { vibrator.click() }
+                                                }
+                                            },
                                             onLongPressChar = { charIndex ->
                                                 haptics.performHapticFeedback(HapticFeedbackType.LongPress)
-                                                viewModel.lookupWordAt(
-                                                    text = verse.text,
-                                                    charIndex = charIndex,
+                                                viewModel.onWordLongPressed(
+                                                    paragraphIndex = idx,
+                                                    fullParagraphText = verse.text,
+                                                    charIndexInParagraph = charIndex,
                                                     verseNumber = verse.number,
+                                                    scrollPermille = readCurrentPermille(),
                                                 )
                                             },
                                             modifier = Modifier.weight(1f)
@@ -1037,7 +1329,7 @@ class ReaderScreen(
                     }
                 }
 
-                // Press-and-Hold Word / Character Dictionary Overlay Card
+                // Press-and-Hold Word Dictionary + Add Note Overlay Card
                 if (isOverlayOpen) {
                     Box(
                         modifier = Modifier
@@ -1048,8 +1340,12 @@ class ReaderScreen(
                             }
                     ) {
                         DictionaryLookupCard(
+                            heldWord = heldWord,
+                            lookupEnabled = lookupEnabled,
                             isLookingUp = isLookingUp,
                             result = lookupResult,
+                            onAddNote = { viewModel.startNoteWordSelection() },
+                            onEditNote = { note -> viewModel.openExistingNoteEditor(note) },
                             onDismiss = { viewModel.dismissLookup() },
                             modifier = Modifier
                                 .align(Alignment.BottomCenter)
@@ -1070,35 +1366,62 @@ class ReaderScreen(
 @Composable
 private fun LookupableVerseText(
     text: String,
+    paragraphIndex: Int,
+    sliceOffsetInParagraph: Int,
+    savedAnchors: List<WordAnchor>,
+    selectedAnchors: List<WordAnchor>,
+    isSelectingWords: Boolean,
     variant: LightTextVariant,
-    lookupEnabled: Boolean,
     onDoubleTap: () -> Unit,
+    onTapChar: (Int) -> Unit,
     onLongPressChar: (Int) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val style = readerScaledTextStyle(variant)
     val color = LightThemeTokens.colors.content
-    var layoutResult by remember(text, variant) { mutableStateOf<TextLayoutResult?>(null) }
+    val layoutResultState = remember { mutableStateOf<TextLayoutResult?>(null) }
+    val currentOnDoubleTap by rememberUpdatedState(onDoubleTap)
+    val currentOnTapChar by rememberUpdatedState(onTapChar)
+    val currentOnLongPressChar by rememberUpdatedState(onLongPressChar)
 
-    val gestureModifier = modifier.pointerInput(text, lookupEnabled) {
-        detectTapGestures(
-            onDoubleTap = { onDoubleTap() },
-            onLongPress = if (lookupEnabled) {
-                { position ->
-                    layoutResult?.let { layout ->
-                        val offset = layout.getOffsetForPosition(position)
-                        onLongPressChar(offset)
-                    }
-                }
-            } else null,
+    val annotatedText = remember(text, paragraphIndex, sliceOffsetInParagraph, savedAnchors, selectedAnchors) {
+        WordNoteUtils.buildUnderlinedText(
+            text = text,
+            paragraphIndex = paragraphIndex,
+            sliceOffsetInParagraph = sliceOffsetInParagraph,
+            savedAnchors = savedAnchors,
+            selectedAnchors = selectedAnchors,
         )
     }
 
+    val gestureModifier = modifier.pointerInput(text, variant, isSelectingWords) {
+        if (isSelectingWords) {
+            detectTapGestures(
+                onTap = { position ->
+                    layoutResultState.value?.let { layout ->
+                        val offset = layout.getOffsetForPosition(position)
+                        currentOnTapChar(offset)
+                    }
+                },
+            )
+        } else {
+            detectTapGestures(
+                onDoubleTap = { currentOnDoubleTap() },
+                onLongPress = { position ->
+                    layoutResultState.value?.let { layout ->
+                        val offset = layout.getOffsetForPosition(position)
+                        currentOnLongPressChar(offset)
+                    }
+                },
+            )
+        }
+    }
+
     Text(
-        text = text,
+        text = annotatedText,
         color = color,
         style = style,
-        onTextLayout = { layoutResult = it },
+        onTextLayout = { layoutResultState.value = it },
         modifier = gestureModifier,
     )
 }
@@ -1126,8 +1449,12 @@ private fun TextUnit.scaledTextUnit(): TextUnit {
 
 @Composable
 private fun DictionaryLookupCard(
+    heldWord: ReaderViewModel.HeldWordContext?,
+    lookupEnabled: Boolean,
     isLookingUp: Boolean,
     result: WordLookupResult?,
+    onAddNote: () -> Unit,
+    onEditNote: (NoteEntity) -> Unit,
     onDismiss: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -1139,27 +1466,12 @@ private fun DictionaryLookupCard(
             .background(colors.background, RoundedCornerShape(6.dp))
             .border(width = 1.5.dp, color = colors.content, shape = RoundedCornerShape(6.dp))
             .padding(horizontal = 14.dp, vertical = 12.dp)
-            .heightIn(max = 310.dp)
+            .heightIn(max = 360.dp)
     ) {
-        if (isLookingUp || result == null) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                LightText(
-                    text = "Looking up...",
-                    variant = LightTextVariant.Subheading,
-                    modifier = Modifier.weight(1f)
-                )
-                LightText(
-                    text = "✕",
-                    variant = LightTextVariant.Subheading,
-                    modifier = Modifier
-                        .padding(start = 12.dp)
-                        .lightClickable { onDismiss() }
-                )
-            }
-            return@Column
+        val headerTitle = when {
+            result != null -> result.headword
+            heldWord != null -> heldWord.wordText
+            else -> "Looking up..."
         }
 
         // Header: Word + Reading/Pinyin + Close button
@@ -1170,10 +1482,10 @@ private fun DictionaryLookupCard(
             Column(modifier = Modifier.weight(1f)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     LightText(
-                        text = result.headword,
+                        text = headerTitle,
                         variant = LightTextVariant.Subheading
                     )
-                    if (result.reading.isNotBlank()) {
+                    if (result != null && result.reading.isNotBlank()) {
                         Spacer(modifier = Modifier.width(8.dp))
                         LightText(
                             text = result.reading,
@@ -1182,12 +1494,20 @@ private fun DictionaryLookupCard(
                         )
                     }
                 }
-                LightText(
-                    text = result.sourceLabel,
-                    variant = LightTextVariant.Detail,
-                    lighten = true,
-                    modifier = Modifier.padding(top = 2.dp)
-                )
+                val sourceLine = when {
+                    result != null -> result.sourceLabel
+                    isLookingUp -> "Looking up definition..."
+                    !lookupEnabled -> "Offline dictionary not downloaded"
+                    else -> ""
+                }
+                if (sourceLine.isNotBlank()) {
+                    LightText(
+                        text = sourceLine,
+                        variant = LightTextVariant.Detail,
+                        lighten = true,
+                        modifier = Modifier.padding(top = 2.dp)
+                    )
+                }
             }
             LightText(
                 text = "✕",
@@ -1206,56 +1526,142 @@ private fun DictionaryLookupCard(
 
         Column(
             modifier = Modifier
+                .weight(1f, fill = false)
                 .fillMaxWidth()
                 .verticalScroll(rememberScrollState())
         ) {
-            LightText(
-                text = result.definition,
-                variant = LightTextVariant.Paragraph
-            )
+            if (isLookingUp) {
+                LightText(
+                    text = "Looking up...",
+                    variant = LightTextVariant.Detail,
+                    lighten = true,
+                )
+            } else if (result != null) {
+                LightText(
+                    text = result.definition,
+                    variant = LightTextVariant.Paragraph
+                )
 
-            result.characterBreakdown?.let { ch ->
+                result.characterBreakdown?.let { ch ->
+                    HorizontalDivider(
+                        color = colors.content.copy(alpha = 0.2f),
+                        thickness = 1.dp,
+                        modifier = Modifier.padding(vertical = 8.dp)
+                    )
+                    val readingPart = if (ch.reading.isNotBlank()) " (${ch.reading})" else ""
+                    LightText(
+                        text = "Character: ${ch.headword}$readingPart",
+                        variant = LightTextVariant.Detail,
+                        lighten = true
+                    )
+                    LightText(
+                        text = ch.definition,
+                        variant = LightTextVariant.Detail,
+                        modifier = Modifier.padding(top = 2.dp)
+                    )
+                }
+
+                result.englishVersePreview?.let { engVerse ->
+                    Spacer(modifier = Modifier.height(10.dp))
+                    Box(
+                        modifier = Modifier
+                            .border(
+                                width = 1.dp,
+                                color = colors.content.copy(alpha = 0.4f),
+                                shape = RoundedCornerShape(4.dp)
+                            )
+                            .lightClickable { showEnglishVerse = !showEnglishVerse }
+                            .padding(horizontal = 8.dp, vertical = 5.dp)
+                    ) {
+                        LightText(
+                            text = if (showEnglishVerse) "Hide English Verse" else "Compare English Verse",
+                            variant = LightTextVariant.Detail
+                        )
+                    }
+                    if (showEnglishVerse) {
+                        LightText(
+                            text = engVerse,
+                            variant = LightTextVariant.Detail,
+                            lighten = true,
+                            modifier = Modifier.padding(top = 6.dp)
+                        )
+                    }
+                }
+            } else if (!lookupEnabled) {
+                LightText(
+                    text = "Download an offline dictionary in Settings to see definitions here.",
+                    variant = LightTextVariant.Detail,
+                    lighten = true,
+                )
+            }
+
+            // Show existing note(s) attached to this word if any
+            val existingNotes = heldWord?.existingNotes.orEmpty()
+            if (existingNotes.isNotEmpty()) {
                 HorizontalDivider(
                     color = colors.content.copy(alpha = 0.2f),
                     thickness = 1.dp,
                     modifier = Modifier.padding(vertical = 8.dp)
                 )
-                val readingPart = if (ch.reading.isNotBlank()) " (${ch.reading})" else ""
-                LightText(
-                    text = "Character: ${ch.headword}$readingPart",
-                    variant = LightTextVariant.Detail,
-                    lighten = true
-                )
-                LightText(
-                    text = ch.definition,
-                    variant = LightTextVariant.Detail,
-                    modifier = Modifier.padding(top = 2.dp)
-                )
+                existingNotes.take(2).forEach { note ->
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 4.dp)
+                            .lightClickable { onEditNote(note) },
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            LightText(
+                                text = "NOTE",
+                                variant = LightTextVariant.Detail,
+                                lighten = true,
+                            )
+                            LightText(
+                                text = note.noteText,
+                                variant = LightTextVariant.Paragraph,
+                                maxLines = 2,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.padding(top = 2.dp),
+                            )
+                        }
+                        LightText(
+                            text = "Edit",
+                            variant = LightTextVariant.Detail,
+                            modifier = Modifier.padding(start = 10.dp),
+                        )
+                    }
+                }
             }
+        }
 
-            result.englishVersePreview?.let { engVerse ->
-                Spacer(modifier = Modifier.height(10.dp))
+        // Action bar right below definition: Add Note
+        if (heldWord != null) {
+            HorizontalDivider(
+                color = colors.content.copy(alpha = 0.25f),
+                thickness = 1.dp,
+                modifier = Modifier.padding(top = 10.dp, bottom = 8.dp)
+            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
                 Box(
                     modifier = Modifier
+                        .weight(1f)
                         .border(
                             width = 1.dp,
-                            color = colors.content.copy(alpha = 0.4f),
-                            shape = RoundedCornerShape(4.dp)
+                            color = colors.content,
+                            shape = RoundedCornerShape(4.dp),
                         )
-                        .lightClickable { showEnglishVerse = !showEnglishVerse }
-                        .padding(horizontal = 8.dp, vertical = 5.dp)
+                        .lightClickable { onAddNote() }
+                        .padding(vertical = 8.dp),
+                    contentAlignment = Alignment.Center,
                 ) {
                     LightText(
-                        text = if (showEnglishVerse) "Hide English Verse" else "Compare English Verse",
-                        variant = LightTextVariant.Detail
-                    )
-                }
-                if (showEnglishVerse) {
-                    LightText(
-                        text = engVerse,
-                        variant = LightTextVariant.Detail,
-                        lighten = true,
-                        modifier = Modifier.padding(top = 6.dp)
+                        text = "Add Note",
+                        variant = LightTextVariant.Paragraph,
                     )
                 }
             }

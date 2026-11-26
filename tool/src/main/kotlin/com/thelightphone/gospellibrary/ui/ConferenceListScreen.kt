@@ -43,10 +43,13 @@ import com.thelightphone.sdk.ui.LightTopBar
 import com.thelightphone.sdk.ui.LightTopBarCenter
 import com.thelightphone.sdk.ui.gridUnitsAsDp
 import com.thelightphone.sdk.ui.lightClickable
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.launch
 
 class ConferenceListViewModel(
@@ -74,10 +77,10 @@ class ConferenceListViewModel(
     private var collectJob: Job? = null
     private var languagesJob: Job? = null
     private var syncJob: Job? = null
+    private var refreshJob: Job? = null
 
     override fun onScreenShow(screen: SimpleLightScreen<Unit>) {
         super.onScreenShow(screen)
-        repository.ensureConferenceAssetLoaded()
         _periods.value = GeneralConferenceData.getConferencePeriods()
         if (_selectedPeriodId.value == null) {
             _selectedPeriodId.value = _periods.value.firstOrNull()?.id
@@ -95,18 +98,23 @@ class ConferenceListViewModel(
             }
         }
 
-        viewModelScope.launch {
-            val activeLang = GospelLanguage.fromCode(repository.getActiveLanguageCodeSync())
-            _currentLanguage.value = activeLang
-            refreshPeriodsForLanguage(activeLang)
-        }
-
         collectJob?.cancel()
         collectJob = viewModelScope.launch {
-            repository.conferenceTalks.collect {
-                refreshPeriodsForLanguage(_currentLanguage.value)
-            }
+            val activeLang = GospelLanguage.fromCode(repository.getActiveLanguageCodeSync())
+            _currentLanguage.value = activeLang
+            combine(repository.conferenceTalks, _currentLanguage) { _, lang -> lang }
+                .collectLatest { lang ->
+                    refreshPeriodsForLanguage(lang)
+                }
         }
+    }
+
+    override fun onScreenHide(screen: SimpleLightScreen<Unit>) {
+        super.onScreenHide(screen)
+        collectJob?.cancel()
+        languagesJob?.cancel()
+        syncJob?.cancel()
+        refreshJob?.cancel()
     }
 
     private suspend fun refreshPeriodsForLanguage(language: GospelLanguage) {
@@ -123,9 +131,9 @@ class ConferenceListViewModel(
         val currentIdx = list.indexOf(_currentLanguage.value).coerceAtLeast(0)
         val nextLang = list[(currentIdx + 1) % list.size]
         _currentLanguage.value = nextLang
-        viewModelScope.launch {
+        refreshJob?.cancel()
+        refreshJob = viewModelScope.launch {
             repository.setActiveLanguage(nextLang.code)
-            refreshPeriodsForLanguage(nextLang)
         }
     }
 
@@ -145,7 +153,9 @@ class ConferenceListViewModel(
                 if (outcome.downloadedNew) {
                     refreshPeriodsForLanguage(_currentLanguage.value)
                 }
-            } catch (_: Throwable) {
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
                 _syncMessage.value = "Unable to check right now. Try again later."
             } finally {
                 _isSyncing.value = false
@@ -168,13 +178,15 @@ class ConferenceListScreen(
                     GospelDatabase.MIGRATION_2_3,
                     GospelDatabase.MIGRATION_3_4,
                     GospelDatabase.MIGRATION_4_5,
+                    GospelDatabase.MIGRATION_5_6,
                 )
                 fallbackToDestructiveMigration()
             }
         },
         assetStreamProvider = { path ->
             lightContext.readAsset(path).inputStream()
-        }
+        },
+        filesDir = lightContext.filesDir,
     )
 
     override val viewModelClass: Class<ConferenceListViewModel>

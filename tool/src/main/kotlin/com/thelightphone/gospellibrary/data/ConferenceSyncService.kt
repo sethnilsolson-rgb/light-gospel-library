@@ -1,6 +1,7 @@
 package com.thelightphone.gospellibrary.data
 
 import com.thelightphone.gospellibrary.db.ConferenceTalkEntity
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -12,9 +13,11 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import java.io.IOException
 import java.net.HttpURLConnection
 import java.net.URI
 import java.util.Calendar
+import java.util.concurrent.atomic.AtomicInteger
 
 @Serializable
 data class RemoteConferenceResponse(
@@ -62,6 +65,18 @@ object ConferenceSyncService {
 
     private const val CHURCH_API_BASE =
         "https://www.churchofjesuschrist.org/study/api/v3/language-pages/type/content?lang=eng&uri="
+
+    private val BLOCK_TAG_REGEX =
+        Regex("""<(p|h2|h3|h4|li)(?:\s[^>]*)?>(.*?)</\1>""", setOf(RegexOption.DOT_MATCHES_ALL))
+    private val SUP_MARKER_REGEX =
+        Regex("""<sup[^>]*class="[^"]*marker[^"]*"[^>]*>.*?</sup>""", setOf(RegexOption.DOT_MATCHES_ALL))
+    private val SUP_NUMBER_REGEX =
+        Regex("""<sup[^>]*>\s*\d+\s*</sup>""", setOf(RegexOption.DOT_MATCHES_ALL))
+    private val BR_TAG_REGEX = Regex("""<br\s*/?>""", RegexOption.IGNORE_CASE)
+    private val HTML_TAG_REGEX = Regex("""<[^>]+>""")
+    private val HORIZONTAL_WHITESPACE_REGEX = Regex("""[ \t]+""")
+    private val NUMERIC_ENTITY_REGEX = Regex("""&#(\d+);""")
+    private val HEX_ENTITY_REGEX = Regex("""&#[xX]([0-9a-fA-F]+);""")
 
     private val json = Json {
         ignoreUnknownKeys = true
@@ -144,34 +159,47 @@ object ConferenceSyncService {
     suspend fun fetchConferenceFromChurchOrg(
         year: Int,
         monthNum: Int,
+    ): Result<List<ConferenceTalkEntity>> = fetchConferenceFromChurchOrg(
+        year = year,
+        monthNum = monthNum,
+        pageFetcher = ::fetchApiPage,
+    )
+
+    internal suspend fun fetchConferenceFromChurchOrg(
+        year: Int,
+        monthNum: Int,
+        pageFetcher: suspend (String) -> String?,
     ): Result<List<ConferenceTalkEntity>> = withContext(Dispatchers.IO) {
-        runCatching {
+        try {
             val monthStr = "%02d".format(monthNum)
             val monthName = if (monthNum == 4) "April" else "October"
             val periodId = "$year-$monthStr"
             val periodName = "$monthName $year"
 
-            val manifestJson = fetchApiPage("/general-conference/$year/$monthStr")
+            val manifestJson = pageFetcher("/general-conference/$year/$monthStr")
+                ?: return@withContext Result.success(emptyList())
             val manifestBody = extractContentBody(manifestJson)
             if (manifestBody.isBlank()) {
-                return@runCatching emptyList()
+                return@withContext Result.success(emptyList())
             }
 
             val sessions = parseChurchOrgManifest(manifestBody, year, monthStr)
             if (sessions.isEmpty()) {
-                return@runCatching emptyList()
+                return@withContext Result.success(emptyList())
             }
 
             val semaphore = Semaphore(4)
             val entities = mutableListOf<ConferenceTalkEntity>()
+            val expectedTalks = sessions.sumOf { it.talkUris.size }
+            val failedTalks = AtomicInteger(0)
 
             sessions.forEachIndexed { sIdx, session ->
                 val talkEntities = coroutineScope {
                     session.talkUris.mapIndexed { tIdx, talkUri ->
                         async(Dispatchers.IO) {
                             semaphore.withPermit {
-                                runCatching {
-                                    val talkJson = fetchApiPage(talkUri)
+                                try {
+                                    val talkJson = pageFetcher(talkUri) ?: return@withPermit null
                                     val talkBody = extractContentBody(talkJson)
                                     val metaTitle = extractMetaTitle(talkJson)
                                     parseChurchOrgTalkHtml(
@@ -186,7 +214,12 @@ object ConferenceSyncService {
                                         sessionOrder = sIdx,
                                         talkOrder = tIdx,
                                     )
-                                }.getOrNull()
+                                } catch (e: CancellationException) {
+                                    throw e
+                                } catch (_: Exception) {
+                                    failedTalks.incrementAndGet()
+                                    null
+                                }
                             }
                         }
                     }.awaitAll().filterNotNull()
@@ -194,11 +227,21 @@ object ConferenceSyncService {
                 entities.addAll(talkEntities)
             }
 
-            entities
+            if (failedTalks.get() > 0) {
+                return@withContext Result.failure(
+                    IOException("Incomplete conference sync for $periodName (${entities.size}/$expectedTalks talks)")
+                )
+            }
+
+            Result.success(entities)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Result.failure(e)
         }
     }
 
-    private fun fetchApiPage(uriPath: String): String {
+    private fun fetchApiPage(uriPath: String): String? {
         val fullUrl = "$CHURCH_API_BASE$uriPath"
         var connection: HttpURLConnection? = null
         try {
@@ -212,6 +255,9 @@ object ConferenceSyncService {
             }
 
             val code = connection.responseCode
+            if (code == HttpURLConnection.HTTP_NOT_FOUND) {
+                return null
+            }
             if (code != HttpURLConnection.HTTP_OK) {
                 error("HTTP $code for $uriPath")
             }
@@ -313,17 +359,22 @@ object ConferenceSyncService {
             htmlBody
         }
 
-        val blockRegex = Regex("""<(p|h2|h3|h4|li)(?:\s[^>]*)?>(.*?)</\1>""", setOf(RegexOption.DOT_MATCHES_ALL))
         val paragraphs = mutableListOf<String>()
-        blockRegex.findAll(bodyHtml).forEach { match ->
-            val tag = match.groupValues[1]
-            val inner = match.groupValues[2]
-            if (tag == "li" && inner.contains("<p")) return@forEach
-            val cleaned = cleanHtmlText(inner)
-            if (cleaned.isNotBlank()) {
-                paragraphs.add(cleaned)
+        fun extractBlocks(html: String) {
+            BLOCK_TAG_REGEX.findAll(html).forEach { match ->
+                val tag = match.groupValues[1]
+                val inner = match.groupValues[2]
+                if (tag == "li" && inner.contains("<p", ignoreCase = true)) {
+                    extractBlocks(inner)
+                    return@forEach
+                }
+                val cleaned = cleanHtmlText(inner)
+                if (cleaned.isNotBlank()) {
+                    paragraphs.add(cleaned)
+                }
             }
         }
+        extractBlocks(bodyHtml)
 
         if (title.isBlank() || paragraphs.isEmpty()) return null
 
@@ -349,27 +400,26 @@ object ConferenceSyncService {
     internal fun cleanHtmlText(rawHtml: String): String {
         var s = rawHtml
         // Remove footnote marker superscripts
-        s = s.replace(Regex("""<sup[^>]*class="[^"]*marker[^"]*"[^>]*>.*?</sup>""", setOf(RegexOption.DOT_MATCHES_ALL)), "")
-        s = s.replace(Regex("""<sup[^>]*>\s*\d+\s*</sup>""", setOf(RegexOption.DOT_MATCHES_ALL)), "")
+        s = s.replace(SUP_MARKER_REGEX, "")
+        s = s.replace(SUP_NUMBER_REGEX, "")
         // Replace <br> with newline
-        s = s.replace(Regex("""<br\s*/?>""", RegexOption.IGNORE_CASE), "\n")
+        s = s.replace(BR_TAG_REGEX, "\n")
         // Strip remaining HTML tags
-        s = s.replace(Regex("""<[^>]+>"""), "")
+        s = s.replace(HTML_TAG_REGEX, "")
         // Decode common HTML entities
         s = decodeHtmlEntities(s)
         // Normalize spaces
         s = s.replace('\u00A0', ' ').replace('\u202F', ' ')
         return s.split("\n")
-            .map { it.replace(Regex("""[ \t]+"""), " ").trim() }
+            .map { it.replace(HORIZONTAL_WHITESPACE_REGEX, " ").trim() }
             .filter { it.isNotBlank() }
             .joinToString("\n")
             .trim()
     }
 
-    private fun decodeHtmlEntities(input: String): String {
+    internal fun decodeHtmlEntities(input: String): String {
         var s = input
             .replace("&nbsp;", " ")
-            .replace("&amp;", "&")
             .replace("&lt;", "<")
             .replace("&gt;", ">")
             .replace("&quot;", "\"")
@@ -384,16 +434,25 @@ object ConferenceSyncService {
             .replace("&hellip;", "…")
 
         // Numeric decimal entities &#123;
-        s = Regex("""&#(\d+);""").replace(s) { m ->
+        s = NUMERIC_ENTITY_REGEX.replace(s) { m ->
             val code = m.groupValues[1].toIntOrNull()
-            if (code != null && code > 0) code.toChar().toString() else m.value
+            if (code != null && code > 0 && Character.isValidCodePoint(code)) {
+                String(Character.toChars(code))
+            } else {
+                m.value
+            }
         }
-        // Numeric hex entities &#x1F;
-        s = Regex("""&#[xX]([0-9a-fA-F]+);""").replace(s) { m ->
+        // Numeric hex entities &#x1F600;
+        s = HEX_ENTITY_REGEX.replace(s) { m ->
             val code = m.groupValues[1].toIntOrNull(16)
-            if (code != null && code > 0) code.toChar().toString() else m.value
+            if (code != null && code > 0 && Character.isValidCodePoint(code)) {
+                String(Character.toChars(code))
+            } else {
+                m.value
+            }
         }
-        return s
+        // Decode &amp; last to avoid double-decoding escaped entities such as &amp;mdash;
+        return s.replace("&amp;", "&")
     }
 
     fun parseConferenceJson(jsonString: String): List<ConferenceTalkEntity> {

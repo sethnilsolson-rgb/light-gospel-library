@@ -16,8 +16,9 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         TranslatedConferenceTalkEntity::class,
         LanguageDictEntryEntity::class,
         SyncedHymnEntity::class,
+        NoteEntity::class,
     ],
-    version = 5,
+    version = 6,
     exportSchema = false,
 )
 abstract class GospelDatabase : RoomDatabase() {
@@ -28,6 +29,7 @@ abstract class GospelDatabase : RoomDatabase() {
     abstract fun languageDao(): LanguageDao
     abstract fun languageDictionaryDao(): LanguageDictionaryDao
     abstract fun hymnDao(): HymnDao
+    abstract fun noteDao(): NoteDao
 
     companion object {
         val MIGRATION_2_3 = object : Migration(2, 3) {
@@ -127,6 +129,39 @@ abstract class GospelDatabase : RoomDatabase() {
                         `updatedAt` INTEGER NOT NULL,
                         PRIMARY KEY(`id`)
                     )
+                    """.trimIndent()
+                )
+            }
+        }
+
+        val MIGRATION_5_6 = object : Migration(5, 6) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `notes` (
+                        `id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                        `contentId` TEXT NOT NULL,
+                        `bookTitle` TEXT NOT NULL,
+                        `chapterTitle` TEXT NOT NULL,
+                        `anchorsEncoded` TEXT NOT NULL,
+                        `quotedText` TEXT NOT NULL,
+                        `noteText` TEXT NOT NULL,
+                        `scrollPermille` INTEGER NOT NULL DEFAULT 0,
+                        `createdAt` INTEGER NOT NULL,
+                        `updatedAt` INTEGER NOT NULL
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL(
+                    """
+                    CREATE INDEX IF NOT EXISTS `index_notes_contentId`
+                    ON `notes` (`contentId`)
+                    """.trimIndent()
+                )
+                db.execSQL(
+                    """
+                    CREATE INDEX IF NOT EXISTS `index_notes_updatedAt`
+                    ON `notes` (`updatedAt`)
                     """.trimIndent()
                 )
             }

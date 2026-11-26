@@ -14,6 +14,8 @@ data class GospelPageSlice(
     val verseNumber: Int?,
     val showVerseNumber: Boolean,
     val text: String,
+    val isLastSlice: Boolean = true,
+    val charOffsetInVerse: Int = 0,
 )
 
 data class GospelReaderPage(
@@ -101,7 +103,8 @@ object GospelReaderPaginator {
             var startLine = 0
             while (startLine < lineCount) {
                 val isFirstSlice = startLine == 0
-                val topPad = if (isFirstSlice) sliceTopPadPx else contTopPadPx
+                val showNumber = isFirstSlice && hasNumber
+                val topPad = if (showNumber) sliceTopPadPx else contTopPadPx
                 val available = usableHeightPx - currentY - topPad
 
                 var endLine = startLine - 1
@@ -145,8 +148,10 @@ object GospelReaderPaginator {
                         GospelPageSlice(
                             sourceIndex = idx,
                             verseNumber = verse.number,
-                            showVerseNumber = isFirstSlice && hasNumber,
+                            showVerseNumber = showNumber,
                             text = sliceText,
+                            isLastSlice = isLastSlice,
+                            charOffsetInVerse = charStart,
                         )
                     )
                     currentY += topPad + sliceHeight + if (isLastSlice) sliceBottomPadPx else 0

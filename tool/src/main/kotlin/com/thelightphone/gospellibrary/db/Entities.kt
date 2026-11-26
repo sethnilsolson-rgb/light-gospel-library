@@ -127,3 +127,21 @@ data class SyncedHymnEntity(
     val credits: String,
     val updatedAt: Long = System.currentTimeMillis(),
 )
+
+@Entity(
+    tableName = "notes",
+    indices = [Index(value = ["contentId"]), Index(value = ["updatedAt"])],
+)
+data class NoteEntity(
+    @PrimaryKey(autoGenerate = true)
+    val id: Long = 0,
+    val contentId: String,
+    val bookTitle: String,
+    val chapterTitle: String,
+    val anchorsEncoded: String,
+    val quotedText: String,
+    val noteText: String,
+    val scrollPermille: Int = 0,
+    val createdAt: Long = System.currentTimeMillis(),
+    val updatedAt: Long = System.currentTimeMillis(),
+)

@@ -57,6 +57,9 @@ class HomeScreenViewModel(
     private val _bookmarkCount = MutableStateFlow(0)
     val bookmarkCount: StateFlow<Int> = _bookmarkCount.asStateFlow()
 
+    private val _noteCount = MutableStateFlow(0)
+    val noteCount: StateFlow<Int> = _noteCount.asStateFlow()
+
     private val _latestConferenceTitle = MutableStateFlow("October 2026 Conference")
     val latestConferenceTitle: StateFlow<String> = _latestConferenceTitle.asStateFlow()
 
@@ -71,6 +74,7 @@ class HomeScreenViewModel(
 
     private var lastReadJob: Job? = null
     private var bookmarkJob: Job? = null
+    private var noteCountJob: Job? = null
     private var conferenceJob: Job? = null
     private var hymnsJob: Job? = null
     private var hasSyncedOnLaunch = false
@@ -91,6 +95,13 @@ class HomeScreenViewModel(
         bookmarkJob = viewModelScope.launch {
             repository.bookmarkCount.collect { count ->
                 _bookmarkCount.value = count
+            }
+        }
+
+        noteCountJob?.cancel()
+        noteCountJob = viewModelScope.launch {
+            repository.noteCount.collect { count ->
+                _noteCount.value = count
             }
         }
 
@@ -142,13 +153,15 @@ class HomeScreen(
                     GospelDatabase.MIGRATION_2_3,
                     GospelDatabase.MIGRATION_3_4,
                     GospelDatabase.MIGRATION_4_5,
+                    GospelDatabase.MIGRATION_5_6,
                 )
                 fallbackToDestructiveMigration()
             }
         },
         assetStreamProvider = { path ->
             lightContext.readAsset(path).inputStream()
-        }
+        },
+        filesDir = lightContext.filesDir,
     )
 
     override val viewModelClass: Class<HomeScreenViewModel>
@@ -161,6 +174,7 @@ class HomeScreen(
         val themeColors by LightThemeController.colors.collectAsState()
         val lastRead by viewModel.lastRead.collectAsState()
         val bookmarkCount by viewModel.bookmarkCount.collectAsState()
+        val noteCount by viewModel.noteCount.collectAsState()
         val latestConferenceTitle by viewModel.latestConferenceTitle.collectAsState()
         val latestConferenceSubtitle by viewModel.latestConferenceSubtitle.collectAsState()
         val homeAndChurchHymnCount by viewModel.homeAndChurchHymnCount.collectAsState()
@@ -245,7 +259,7 @@ class HomeScreen(
                             Spacer(modifier = Modifier.height(16.dp))
                         }
 
-                        // Bookmarks Quick Entry
+                        // Bookmarks & Notes Quick Entry
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -259,11 +273,13 @@ class HomeScreen(
                         ) {
                             Column(modifier = Modifier.weight(1f)) {
                                 LightText(
-                                    text = "Bookmarks",
+                                    text = "Bookmarks & Notes",
                                     variant = LightTextVariant.Subheading
                                 )
+                                val bmLabel = if (bookmarkCount == 1) "1 bookmark" else "$bookmarkCount bookmarks"
+                                val noteLabel = if (noteCount == 1) "1 note" else "$noteCount notes"
                                 LightText(
-                                    text = if (bookmarkCount == 1) "1 saved bookmark" else "$bookmarkCount saved bookmarks",
+                                    text = "$noteLabel • $bmLabel",
                                     variant = LightTextVariant.Detail,
                                     lighten = true,
                                     modifier = Modifier.padding(top = 2.dp)

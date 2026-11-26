@@ -74,7 +74,6 @@ class SettingsViewModel(
 
     private var languagesJob: Job? = null
     private var activeLangJob: Job? = null
-    private var workJob: Job? = null
 
     override fun onScreenShow(screen: SimpleLightScreen<Unit>) {
         super.onScreenShow(screen)
@@ -96,51 +95,71 @@ class SettingsViewModel(
 
     fun downloadEnglish1828() {
         if (_busyKey.value != null) return
-        workJob = viewModelScope.launch {
+        viewModelScope.launch {
             _busyKey.value = "eng_1828"
             _errorText.value = null
             _progressText.value = "Connecting to Webster's 1828 Dictionary..."
-            val result = repository.downloadEnglish1828Dictionary { progress ->
-                _progressText.value = progress
+            try {
+                val result = repository.downloadEnglish1828Dictionary { progress ->
+                    _progressText.value = progress
+                }
+                result.onFailure {
+                    _errorText.value = "Couldn't download Webster's 1828. Check Wi-Fi/internet and try again."
+                }
+            } finally {
+                _busyKey.value = null
+                _progressText.value = null
             }
-            result.onFailure {
-                _errorText.value = "Couldn't download Webster's 1828. Check Wi-Fi/internet and try again."
-            }
-            _busyKey.value = null
-            _progressText.value = null
         }
     }
 
     fun removeEnglish1828() {
         if (_busyKey.value != null) return
         viewModelScope.launch {
+            _busyKey.value = "remove:eng_1828"
             _errorText.value = null
-            repository.removeEnglish1828Dictionary()
+            _progressText.value = "Removing Webster's 1828 Dictionary..."
+            try {
+                repository.removeEnglish1828Dictionary()
+            } finally {
+                _busyKey.value = null
+                _progressText.value = null
+            }
         }
     }
 
     fun downloadLanguage(language: GospelLanguage) {
         if (_busyKey.value != null) return
-        workJob = viewModelScope.launch {
+        viewModelScope.launch {
             _busyKey.value = "lang:${language.code}"
             _errorText.value = null
             _progressText.value = "Preparing ${language.englishName}..."
-            val result = repository.downloadLanguagePack(language) { progress ->
-                _progressText.value = progress
+            try {
+                val result = repository.downloadLanguagePack(language) { progress ->
+                    _progressText.value = progress
+                }
+                result.onFailure {
+                    _errorText.value = "Couldn't download ${language.englishName}. Check internet and try again."
+                }
+            } finally {
+                _busyKey.value = null
+                _progressText.value = null
             }
-            result.onFailure {
-                _errorText.value = "Couldn't download ${language.englishName}. Check internet and try again."
-            }
-            _busyKey.value = null
-            _progressText.value = null
         }
     }
 
     fun removeLanguage(language: GospelLanguage) {
         if (_busyKey.value != null) return
         viewModelScope.launch {
+            _busyKey.value = "remove:${language.code}"
             _errorText.value = null
-            repository.removeLanguagePack(language)
+            _progressText.value = "Removing ${language.englishName}..."
+            try {
+                repository.removeLanguagePack(language)
+            } finally {
+                _busyKey.value = null
+                _progressText.value = null
+            }
         }
     }
 
@@ -152,18 +171,21 @@ class SettingsViewModel(
 
     fun downloadVolumeOffline(language: GospelLanguage, volumeId: String, label: String) {
         if (_busyKey.value != null) return
-        workJob = viewModelScope.launch {
+        viewModelScope.launch {
             _busyKey.value = "vol:${language.code}:$volumeId"
             _errorText.value = null
             _progressText.value = "Downloading $label (${language.nativeName})..."
-            val result = repository.downloadVolumeOffline(language, volumeId) { progress ->
-                _progressText.value = "$label: $progress"
+            try {
+                val result = repository.downloadVolumeOffline(language, volumeId) { progress ->
+                    _progressText.value = "$label: $progress"
+                }
+                result.onFailure {
+                    _errorText.value = "Offline download interrupted. Tap again to resume."
+                }
+            } finally {
+                _busyKey.value = null
+                _progressText.value = null
             }
-            result.onFailure {
-                _errorText.value = "Offline download interrupted. Tap again to resume."
-            }
-            _busyKey.value = null
-            _progressText.value = null
         }
     }
     fun togglePageMode() {
@@ -185,6 +207,7 @@ class SettingsScreen(
                     GospelDatabase.MIGRATION_2_3,
                     GospelDatabase.MIGRATION_3_4,
                     GospelDatabase.MIGRATION_4_5,
+                    GospelDatabase.MIGRATION_5_6,
                 )
                 fallbackToDestructiveMigration()
             }
@@ -395,6 +418,7 @@ class SettingsScreen(
                                     SettingsActionPill(
                                         label = "Remove",
                                         highlighted = false,
+                                        enabled = busyKey == null,
                                         onClick = { viewModel.removeEnglish1828() }
                                     )
                                 } else {

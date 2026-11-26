@@ -30,10 +30,14 @@ fun Modifier.swipeToBack(
         awaitEachGesture {
             val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
             val startX = down.position.x
+            if (sideOnly && startX > edgeThresholdPx) {
+                return@awaitEachGesture
+            }
+
             var totalDx = 0f
             var totalDy = 0f
             var horizontalLocked = false
-            var verticalLocked = false
+            var gestureRejected = false
             val slop = viewConfiguration.touchSlop
 
             while (true) {
@@ -52,13 +56,13 @@ fun Modifier.swipeToBack(
                 totalDx += delta.x
                 totalDy += delta.y
 
-                if (!horizontalLocked && !verticalLocked) {
+                if (!horizontalLocked && !gestureRejected) {
                     val absX = abs(totalDx)
                     val absY = abs(totalDy)
-                    if (absX > slop && absX > absY * 1.25f) {
+                    if (totalDx > slop && totalDx > absY * 1.25f) {
                         horizontalLocked = true
-                    } else if (absY > slop && absY >= absX) {
-                        verticalLocked = true
+                    } else if ((absY > slop && absY >= absX) || (totalDx < -slop && absX > absY * 1.25f)) {
+                        gestureRejected = true
                     }
                 }
 
@@ -67,8 +71,7 @@ fun Modifier.swipeToBack(
                 }
             }
 
-            val startedAtSide = !sideOnly || startX <= edgeThresholdPx
-            if (horizontalLocked && startedAtSide && totalDx >= swipeDistanceThresholdPx) {
+            if (horizontalLocked && totalDx >= swipeDistanceThresholdPx) {
                 currentOnBack()
             }
         }
